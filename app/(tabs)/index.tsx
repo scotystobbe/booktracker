@@ -1,75 +1,218 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
-
-import { HelloWave } from '@/components/HelloWave';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
+import { BookDetail } from '@/components/BookDetail';
+import { BookDetailView } from '@/components/BookDetailView';
+import { BookForm } from '@/components/BookForm';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
+import { useBooks } from '@/context/BookContext';
+import { Book } from '@/types/Book';
+import React, { useState } from 'react';
+import { ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+type ScreenState = 'list' | 'add' | 'edit' | 'detail' | 'detailView';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
-  );
+  const { books, loading } = useBooks();
+  const [currentScreen, setCurrentScreen] = useState<ScreenState>('list');
+  const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const insets = useSafeAreaInsets();
+
+  // Get the current book (books with percent_complete < 100)
+  const getCurrentBook = () => {
+    if (books.length === 0) return null;
+    
+    // Find books that are not finished (percent_complete < 100)
+    const activeBooks = books.filter(book => book.percent_complete < 100);
+    if (activeBooks.length === 0) return null; // No current book if all are finished
+    
+    // Return the book with highest progress, or most recently started if tied
+    return activeBooks.reduce((current, book) => {
+      if (book.percent_complete > current.percent_complete) return book;
+      if (book.percent_complete === current.percent_complete) {
+        return new Date(book.start_date) > new Date(current.start_date) ? book : current;
+      }
+      return current;
+    });
+  };
+
+  const currentBook = getCurrentBook();
+
+  const handleAddBook = () => {
+    setSelectedBook(null);
+    setCurrentScreen('add');
+  };
+
+  const handleBookPress = (book: Book) => {
+    setSelectedBook(book);
+    setCurrentScreen('detailView');
+  };
+
+  const handleEditBook = () => {
+    setCurrentScreen('edit');
+  };
+
+  const handleBackToList = () => {
+    setCurrentScreen('list');
+    setSelectedBook(null);
+  };
+
+  const handleSaveBook = () => {
+    setCurrentScreen('list');
+    setSelectedBook(null);
+  };
+
+
+
+  const renderCurrentScreen = () => {
+    switch (currentScreen) {
+      case 'add':
+        return (
+          <BookForm
+            onSave={handleSaveBook}
+            onCancel={handleBackToList}
+          />
+        );
+      case 'edit':
+        return (
+          <BookForm
+            book={selectedBook!}
+            onSave={handleSaveBook}
+            onCancel={handleBackToList}
+          />
+        );
+      case 'detail':
+        return (
+          <BookDetail
+            book={selectedBook!}
+            onEdit={handleEditBook}
+            onBack={handleBackToList}
+          />
+        );
+      case 'detailView':
+        return (
+          <BookDetailView
+            book={selectedBook!}
+            onBack={handleBackToList}
+            onEdit={handleEditBook}
+          />
+        );
+
+      default:
+        // Show current book by default if available, otherwise show "no current book" message
+        if (currentBook) {
+          return (
+            <BookDetailView
+              book={currentBook}
+              onEdit={() => {
+                setSelectedBook(currentBook);
+                setCurrentScreen('edit');
+              }}
+            />
+          );
+        }
+        return (
+          <ThemedView style={styles.container}>
+            <ThemedView style={[styles.header, { paddingTop: insets.top + 16 }]}>
+              <ThemedText type="title" style={styles.title}>
+                Current Book
+              </ThemedText>
+              <ThemedView style={styles.headerButtons}>
+                <TouchableOpacity style={styles.addButton} onPress={handleAddBook}>
+                  <ThemedText style={styles.addButtonText}>+ Add Book</ThemedText>
+                </TouchableOpacity>
+              </ThemedView>
+            </ThemedView>
+            {loading ? (
+              <ThemedView style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#50b042" />
+                <ThemedText style={styles.loadingText}>Loading books...</ThemedText>
+              </ThemedView>
+            ) : (
+              <ThemedView style={styles.noCurrentBookContainer}>
+                <ThemedText style={styles.noCurrentBookText}>
+                  No current book
+                </ThemedText>
+                <ThemedText style={styles.noCurrentBookSubtext}>
+                  Start a new book to see it here
+                </ThemedText>
+                <TouchableOpacity style={styles.addBookButton} onPress={handleAddBook}>
+                  <ThemedText style={styles.addBookButtonText}>+ Start New Book</ThemedText>
+                </TouchableOpacity>
+              </ThemedView>
+            )}
+          </ThemedView>
+        );
+    }
+  };
+
+  return renderCurrentScreen();
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  container: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  title: {
+    flex: 1,
+  },
+  headerButtons: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  addButton: {
+    backgroundColor: '#50b042',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  addButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 16,
+  },
+  loadingText: {
+    opacity: 0.7,
+  },
+  noCurrentBookContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+    gap: 16,
+  },
+  noCurrentBookText: {
+    fontSize: 24,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  noCurrentBookSubtext: {
+    fontSize: 16,
+    opacity: 0.7,
+    textAlign: 'center',
+  },
+  addBookButton: {
+    backgroundColor: '#50b042',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  addBookButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
