@@ -1,6 +1,7 @@
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
 import { useBooks } from '@/context/BookContext';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import React, { useMemo, useState } from 'react';
 import { Alert, Modal, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +12,8 @@ export default function StatsScreen() {
   const [activeView, setActiveView] = useState<'highLevel' | 'lifetime'>('highLevel');
   const [showLifeExpectancyModal, setShowLifeExpectancyModal] = useState(false);
   const [tempLifeExpectancy, setTempLifeExpectancy] = useState('');
+  const [showBirthdayModal, setShowBirthdayModal] = useState(false);
+  const [tempBirthday, setTempBirthday] = useState(new Date());
 
   const formatHoursAndMinutes = (decimalHours: number): string => {
     const hours = Math.floor(decimalHours);
@@ -84,18 +87,19 @@ export default function StatsScreen() {
 
   // Lifetime Projection calculations
   const lifetimeProjectionStats = useMemo(() => {
-    const birthday = new Date('1990-09-26');
+    const birthdayStr = getUserData('birthday');
+    const birthday = birthdayStr ? new Date(birthdayStr) : null;
     const now = new Date();
     
-    // Calculate current age in years (with decimal)
-    const ageInYears = (now.getTime() - birthday.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+    // Calculate current age in years (with decimal) - only if birthday is set
+    const ageInYears = birthday ? (now.getTime() - birthday.getTime()) / (1000 * 60 * 60 * 24 * 365.25) : 0;
     
     // Get life expectancy from user data (default to 80 if not set)
     const lifeExpectancyStr = getUserData('lifeExpectancy');
     const lifeExpectancy = lifeExpectancyStr ? parseInt(lifeExpectancyStr) : 80;
     
-    // Calculate years left
-    const yearsLeft = Math.max(0, lifeExpectancy - ageInYears);
+    // Calculate years left - only if birthday is set
+    const yearsLeft = birthday ? Math.max(0, lifeExpectancy - ageInYears) : 0;
     
     // Calculate average books per year
     const completedBooks = books.filter(book => book.percent_complete === 100 && book.finish_date);
@@ -118,8 +122,8 @@ export default function StatsScreen() {
     
     const averageDaysPerBook = booksWithDates > 0 ? totalDays / booksWithDates : 0;
     
-    // Calculate projected books
-    const projectedBooks = Math.round(yearsLeft * averageBooksPerYear);
+    // Calculate projected books - only if birthday is set
+    const projectedBooks = birthday ? Math.round(yearsLeft * averageBooksPerYear) : 0;
     
     return {
       lifeExpectancy,
@@ -127,7 +131,8 @@ export default function StatsScreen() {
       currentAge: ageInYears,
       averageBooksPerYear,
       averageDaysPerBook,
-      projectedBooks
+      projectedBooks,
+      hasBirthday: !!birthday
     };
   }, [books, getUserData]);
 
@@ -146,6 +151,21 @@ export default function StatsScreen() {
   const handleEditLifeExpectancy = () => {
     setTempLifeExpectancy(lifetimeProjectionStats.lifeExpectancy.toString());
     setShowLifeExpectancyModal(true);
+  };
+
+  const handleEditBirthday = () => {
+    const birthdayStr = getUserData('birthday');
+    if (birthdayStr) {
+      setTempBirthday(new Date(birthdayStr));
+    } else {
+      setTempBirthday(new Date());
+    }
+    setShowBirthdayModal(true);
+  };
+
+  const handleSaveBirthday = () => {
+    setUserData('birthday', tempBirthday.toISOString());
+    setShowBirthdayModal(false);
   };
 
   // Group books by year and calculate stats
@@ -231,7 +251,7 @@ export default function StatsScreen() {
     <ThemedView style={styles.container}>
       <ThemedView style={[styles.header, { paddingTop: insets.top + 16 }]}>
         <ThemedText type="title" style={styles.title}>
-          Reading Stats
+          Stats
         </ThemedText>
       </ThemedView>
 
@@ -339,7 +359,11 @@ export default function StatsScreen() {
                 
                 <ThemedView style={styles.metadataBox}>
                   <ThemedText style={styles.metadataLabel}>Current Age</ThemedText>
-                  <ThemedText style={styles.metadataValue}>{lifetimeProjectionStats.currentAge.toFixed(1)}</ThemedText>
+                  <TouchableOpacity onPress={handleEditBirthday}>
+                    <ThemedText style={styles.metadataValue}>
+                      {lifetimeProjectionStats.hasBirthday ? lifetimeProjectionStats.currentAge.toFixed(1) : 'Tap to set'}
+                    </ThemedText>
+                  </TouchableOpacity>
                 </ThemedView>
                 
                 {/* Right Column */}
@@ -381,6 +405,35 @@ export default function StatsScreen() {
                 <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.modalButton, styles.modalButtonPrimary]} onPress={handleSaveLifeExpectancy}>
+                <ThemedText style={[styles.modalButtonText, styles.modalButtonPrimaryText]}>Save</ThemedText>
+              </TouchableOpacity>
+            </ThemedView>
+          </ThemedView>
+        </ThemedView>
+      </Modal>
+
+      {/* Birthday Edit Modal */}
+      <Modal visible={showBirthdayModal} transparent animationType="fade" onRequestClose={() => setShowBirthdayModal(false)}>
+        <ThemedView style={styles.modalOverlay}>
+          <ThemedView style={styles.modalContent}>
+            <ThemedText style={styles.modalTitle}>Set Your Birthday</ThemedText>
+            <DateTimePicker
+              value={tempBirthday}
+              mode="date"
+              display="default"
+              onChange={(event, selectedDate) => {
+                if (selectedDate) {
+                  setTempBirthday(selectedDate);
+                }
+              }}
+              maximumDate={new Date()}
+              style={styles.datePicker}
+            />
+            <ThemedView style={styles.modalButtons}>
+              <TouchableOpacity style={styles.modalButton} onPress={() => setShowBirthdayModal(false)}>
+                <ThemedText style={styles.modalButtonText}>Cancel</ThemedText>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalButton, styles.modalButtonPrimary]} onPress={handleSaveBirthday}>
                 <ThemedText style={[styles.modalButtonText, styles.modalButtonPrimaryText]}>Save</ThemedText>
               </TouchableOpacity>
             </ThemedView>
@@ -588,5 +641,11 @@ const styles = StyleSheet.create({
   },
   modalButtonPrimaryText: {
     color: '#fff',
+  },
+  datePicker: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    marginBottom: 20,
+    alignSelf: 'center',
   },
 });

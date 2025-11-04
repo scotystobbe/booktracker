@@ -9,8 +9,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useState } from 'react';
 import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, TextInput, TouchableOpacity, TouchableWithoutFeedback } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SvgXml } from 'react-native-svg';
 
 type ScreenState = 'main' | 'csvManager';
+
+const PlexLogoSvg = `<svg xmlns="http://www.w3.org/2000/svg" id="mdi-plex" viewBox="0 0 24 24"><path fill="white" d="M4,2C2.89,2 2,2.89 2,4V20C2,21.11 2.89,22 4,22H20C21.11,22 22,21.11 22,20V4C22,2.89 21.11,2 20,2H4M8.56,6H12.06L15.5,12L12.06,18H8.56L12,12L8.56,6Z" /></svg>`;
 
 export default function SettingsScreen() {
   const [currentScreen, setCurrentScreen] = useState<ScreenState>('main');
@@ -23,7 +26,6 @@ export default function SettingsScreen() {
   });
   const [clearing, setClearing] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
-  const [plexExpanded, setPlexExpanded] = useState(false);
   const [showCalculator, setShowCalculator] = useState(false);
   const [calculatorData, setCalculatorData] = useState({
     speed1: '2.0',
@@ -140,6 +142,22 @@ export default function SettingsScreen() {
     return percent1 + percent2 + percent3;
   };
 
+  const formatReadingSpeed = (speed: number): string => {
+    // If it's a whole number, show no decimal places
+    if (speed % 1 === 0) {
+      return speed.toString();
+    }
+    
+    // If it's a perfect tenth (e.g., 1.8, 1.9), show one decimal place
+    const roundedToOneDecimal = Math.round(speed * 10) / 10;
+    if (Math.abs(speed - roundedToOneDecimal) < 0.001) {
+      return speed.toFixed(1);
+    }
+    
+    // Otherwise, show up to 2 decimal places
+    return speed.toFixed(2);
+  };
+
   const calculateWeightedAverage = () => {
     const speeds = [
       parseFloat(calculatorData.speed1) || 0,
@@ -232,7 +250,7 @@ export default function SettingsScreen() {
       await updateBook(currentBook.id, { reading_speed: weightedAverage });
       Alert.alert(
         'Speed Updated', 
-        `Reading speed for "${currentBook.title}" has been updated to ${weightedAverage.toFixed(2)}x.`
+        `Reading speed for "${currentBook.title}" has been updated to ${formatReadingSpeed(weightedAverage)}x.`
       );
     } catch (error) {
       Alert.alert('Error', 'Failed to update reading speed. Please try again.');
@@ -697,163 +715,36 @@ export default function SettingsScreen() {
         </ThemedView>
 
         <ThemedView style={styles.section}>
-          <TouchableOpacity 
-            style={styles.sectionHeader} 
-            onPress={() => setPlexExpanded(!plexExpanded)}
-          >
-            <ThemedText style={styles.sectionTitle}>Plex Integration</ThemedText>
-            <IconSymbol 
-              name={plexExpanded ? "chevron.up" : "chevron.down"} 
-              size={16} 
-              color="#ECEDEE" 
-              style={styles.chevronIcon} 
-            />
-          </TouchableOpacity>
+          <ThemedText style={styles.sectionTitle}>Plex Integration</ThemedText>
           
-          {plexExpanded && (
-            <>
-              <TouchableOpacity 
-                style={styles.settingButton} 
-                onPress={() => setShowPlexOAuth(true)}
-              >
-                <ThemedView style={styles.settingButtonContent}>
-                  <IconSymbol 
-                    name="person.circle" 
-                    size={20} 
-                    color="#ECEDEE" 
-                    style={styles.settingIcon} 
-                  />
-                  <ThemedText style={styles.settingButtonText}>
-                    {plexAuthConfig ? 'Manage Plex Account' : 'Sign in to Plex'}
-                  </ThemedText>
-                </ThemedView>
-                <ThemedText style={styles.settingButtonSubtext}>
-                  {plexAuthConfig ? `Signed in as ${plexAuthConfig.username}` : 'Sign in to your Plex account for automatic book discovery'}
-                </ThemedText>
-              </TouchableOpacity>
+          <TouchableOpacity 
+            style={styles.settingButton} 
+            onPress={() => setShowPlexOAuth(true)}
+          >
+            <ThemedView style={styles.settingButtonContent}>
+              <SvgXml 
+                xml={PlexLogoSvg} 
+                width={20} 
+                height={20}
+                style={styles.settingIcon} 
+              />
+              <ThemedText style={styles.settingButtonText}>
+                {plexAuthConfig ? 'Manage Plex Account' : 'Sign in to Plex'}
+              </ThemedText>
+            </ThemedView>
+            <ThemedText style={styles.settingButtonSubtext}>
+              {plexAuthConfig ? `Signed in as ${plexAuthConfig.username}` : 'Sign in to your Plex account for automatic book discovery'}
+            </ThemedText>
+          </TouchableOpacity>
 
-              {/* Advanced Plex Settings */}
-              <TouchableOpacity 
-                style={styles.sectionHeader} 
-                onPress={() => setPlexAdvancedExpanded(!plexAdvancedExpanded)}
-              >
-                <ThemedText style={styles.sectionTitle}>Advanced Plex Settings</ThemedText>
-                <IconSymbol 
-                  name={plexAdvancedExpanded ? "chevron.up" : "chevron.down"} 
-                  size={16} 
-                  color="#ECEDEE" 
-                  style={styles.chevronIcon} 
-                />
-              </TouchableOpacity>
-              
-              {plexAdvancedExpanded && (
-                <>
-                  <TouchableOpacity 
-                    style={styles.settingButton} 
-                    onPress={handleTestPlexConnection}
-                  >
-                    <ThemedView style={styles.settingButtonContent}>
-                      <IconSymbol 
-                        name="network" 
-                        size={20} 
-                        color="#007AFF" 
-                        style={styles.settingIcon} 
-                      />
-                      <ThemedText style={[styles.settingButtonText, { color: '#007AFF' }]}>
-                        Test Plex Connection
-                      </ThemedText>
-                    </ThemedView>
-                    <ThemedText style={styles.settingButtonSubtext}>
-                      Test current Plex authentication and connection
-                    </ThemedText>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={styles.settingButton} 
-                    onPress={handleTestStorage}
-                  >
-                    <ThemedView style={styles.settingButtonContent}>
-                      <IconSymbol 
-                        name="externaldrive" 
-                        size={20} 
-                        color="#FF9500" 
-                        style={styles.settingIcon} 
-                      />
-                      <ThemedText style={[styles.settingButtonText, { color: '#FF9500' }]}>
-                        Test Storage
-                      </ThemedText>
-                    </ThemedView>
-                    <ThemedText style={styles.settingButtonSubtext}>
-                      Test storing and retrieving Plex auth data
-                    </ThemedText>
-                  </TouchableOpacity>
-                </>
-              )}
-              
-              {plexAuthConfig && (
-                <>
-                                <TouchableOpacity 
-                style={styles.settingButton} 
-                onPress={handleClearPlexCache}
-              >
-                <ThemedView style={styles.settingButtonContent}>
-                  <IconSymbol 
-                    name="arrow.clockwise" 
-                    size={20} 
-                    color="#50b042" 
-                    style={styles.settingIcon} 
-                  />
-                  <ThemedText style={[styles.settingButtonText, { color: '#50b042' }]}>
-                    Clear Plex Cache
-                  </ThemedText>
-                </ThemedView>
-                <ThemedText style={styles.settingButtonSubtext}>
-                  Clear cached Plex data to refresh book information
-                </ThemedText>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={styles.settingButton} 
-                onPress={handleClearAllPlexData}
-              >
-                <ThemedView style={styles.settingButtonContent}>
-                  <IconSymbol 
-                    name="trash" 
-                    size={20} 
-                    color="#ff6b6b" 
-                    style={styles.settingIcon} 
-                  />
-                  <ThemedText style={[styles.settingButtonText, { color: '#ff6b6b' }]}>
-                    Clear All Plex Data
-                  </ThemedText>
-                </ThemedView>
-                <ThemedText style={styles.settingButtonSubtext}>
-                  Clear all stored Plex authentication and library data
-                </ThemedText>
-              </TouchableOpacity>
-                  
-                  <TouchableOpacity 
-                    style={styles.settingButton} 
-                    onPress={handlePlexLogout}
-                  >
-                    <ThemedView style={styles.settingButtonContent}>
-                      <IconSymbol 
-                        name="rectangle.portrait.and.arrow.right" 
-                        size={20} 
-                        color="#ff6b6b" 
-                        style={styles.settingIcon} 
-                      />
-                      <ThemedText style={[styles.settingButtonText, { color: '#ff6b6b' }]}>
-                        Sign Out of Plex
-                      </ThemedText>
-                    </ThemedView>
-                    <ThemedText style={styles.settingButtonSubtext}>
-                      Remove Plex authentication and clear stored data
-                    </ThemedText>
-                  </TouchableOpacity>
-                </>
-              )}
-            </>
+          
+          {plexAuthConfig && (
+            <TouchableOpacity 
+              style={styles.plexSignOutButton} 
+              onPress={handlePlexLogout}
+            >
+              <ThemedText style={styles.plexSignOutText}>Sign Out</ThemedText>
+            </TouchableOpacity>
           )}
         </ThemedView>
 
@@ -900,7 +791,7 @@ export default function SettingsScreen() {
           <ThemedText style={styles.sectionTitle}>About</ThemedText>
           <ThemedView style={styles.aboutItem}>
             <ThemedText style={styles.aboutLabel}>Version</ThemedText>
-            <ThemedText style={styles.aboutValue}>1.0.2</ThemedText>
+            <ThemedText style={styles.aboutValue}>1.1.0</ThemedText>
           </ThemedView>
           <ThemedView style={styles.aboutItem}>
             <ThemedText style={styles.aboutLabel}>App</ThemedText>
@@ -1030,7 +921,7 @@ export default function SettingsScreen() {
               {/* Result */}
               <ThemedView style={styles.resultContainer}>
                 <ThemedText style={styles.resultLabel}>Weighted Average Speed:</ThemedText>
-                <ThemedText style={styles.resultValue}>{calculateWeightedAverage().toFixed(2)}x</ThemedText>
+                <ThemedText style={styles.resultValue}>{formatReadingSpeed(calculateWeightedAverage())}x</ThemedText>
               </ThemedView>
 
               {/* Sync Button */}
@@ -1393,5 +1284,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#000000',
+  },
+  plexSignOutButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 8,
+    padding: 8,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  plexSignOutText: {
+    fontSize: 14,
+    color: '#8E8E93',
   },
 });

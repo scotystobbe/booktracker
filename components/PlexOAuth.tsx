@@ -1,17 +1,19 @@
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
-import { PlexAuthConfig, PlexLibrary, plexService } from '@/services/PlexService';
+import { PlexAuthConfig, PlexConnection, PlexLibrary, plexService } from '@/services/PlexService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Clipboard,
   FlatList,
   Modal,
   StyleSheet,
   TouchableOpacity
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Svg, { Path } from 'react-native-svg';
 
 // Storage functions
 const storePlexAuth = async (auth: PlexAuthConfig) => {
@@ -87,10 +89,26 @@ const clearPlexAuth = async () => {
   }
 };
 
+// Plex Logo Component
+const PlexLogo = ({ size = 24 }: { size?: number }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24">
+    <Path 
+      d="M4,2C2.89,2 2,2.89 2,4V20C2,21.11 2.89,22 4,22H20C21.11,22 22,21.11 22,20V4C22,2.89 21.11,2 20,2H4M8.56,6H12.06L15.5,12L12.06,18H8.56L12,12L8.56,6Z" 
+      fill="#E5A00D"
+    />
+  </Svg>
+);
+
 interface PlexOAuthProps {
   visible: boolean;
   onClose: () => void;
   onSuccess: (authConfig: PlexAuthConfig, selectedLibrary?: PlexLibrary) => void;
+}
+
+interface PlexPin {
+  id: number;
+  code: string;
+  authToken?: string;
 }
 
 export const PlexOAuth: React.FC<PlexOAuthProps> = ({ 
@@ -99,440 +117,522 @@ export const PlexOAuth: React.FC<PlexOAuthProps> = ({
   onSuccess 
 }) => {
   const insets = useSafeAreaInsets();
-  const [step, setStep] = useState<'auth' | 'library'>('auth');
+  const [step, setStep] = useState<'auth' | 'server' | 'library'>('auth');
   const [authConfig, setAuthConfig] = useState<PlexAuthConfig | null>(null);
+  const [servers, setServers] = useState<any[]>([]);
+  const [selectedServer, setSelectedServer] = useState<any | null>(null);
   const [libraries, setLibraries] = useState<PlexLibrary[]>([]);
   const [selectedLibrary, setSelectedLibrary] = useState<PlexLibrary | null>(null);
   const [loading, setLoading] = useState(false);
+  const [pin, setPin] = useState<PlexPin | null>(null);
+  const [polling, setPolling] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<string>('');
+  const [pinCopied, setPinCopied] = useState(false);
+
+  const addDebugInfo = (info: string) => {
+    setDebugInfo(prev => prev + '\n' + new Date().toLocaleTimeString() + ': ' + info);
+  };
+
+  const addDetailedError = (error: any) => {
+    addDebugInfo(`ERROR DETAILS:`);
+    addDebugInfo(`- Name: ${error.name || 'Unknown'}`);
+    addDebugInfo(`- Message: ${error.message || 'Unknown'}`);
+    addDebugInfo(`- Stack: ${error.stack ? error.stack.substring(0, 200) + '...' : 'None'}`);
+    addDebugInfo(`- Cause: ${error.cause || 'None'}`);
+    
+    if (error.name === 'TypeError' && error.message.includes('Network request failed')) {
+      addDebugInfo(`- This is a network connectivity issue`);
+      addDebugInfo(`- Likely ATS blocking HTTP or DNS resolution failure`);
+    }
+  };
+
+  const copyPinToClipboard = async () => {
+    if (pin?.code) {
+      await Clipboard.setString(pin.code);
+      setPinCopied(true);
+      // Reset the copied state after 2 seconds
+      setTimeout(() => setPinCopied(false), 2000);
+    }
+  };
 
   useEffect(() => {
     if (visible) {
       setStep('auth');
       setAuthConfig(null);
+      setServers([]);
+      setSelectedServer(null);
       setLibraries([]);
       setSelectedLibrary(null);
+      setPin(null);
+      setPolling(false);
+      setPinCopied(false);
+      
+      // Try to load existing auth
+      loadExistingAuth();
     }
   }, [visible]);
 
-  // Load stored auth data on mount
-  useEffect(() => {
-    const loadStoredAuth = async () => {
-      const storedAuth = await loadPlexAuth();
-      const storedLibrary = await loadPlexLibrary();
+  const loadExistingAuth = async () => {
+    try {
+      const existingAuth = await loadPlexAuth();
+      const existingLibrary = await loadPlexLibrary();
       
-      if (storedAuth) {
-        setAuthConfig(storedAuth);
-        plexService.setAuthConfig(storedAuth);
+      if (existingAuth) {
+        console.log('Found existing auth, attempting auto-login...');
+        setAuthConfig(existingAuth);
+        plexService.setAuthConfig(existingAuth);
         
-        // Try to get libraries
+        if (existingLibrary) {
+          setSelectedLibrary(existingLibrary);
+          plexService.setSelectedLibrary(existingLibrary.id);
+          console.log('Auto-login successful with existing library');
+          onSuccess(existingAuth, existingLibrary);
+          onClose();
+          return;
+        }
+        
+        // Try to fetch libraries
         try {
           const libs = await plexService.getLibraries();
+          console.log('Libraries fetched:', libs.length);
           setLibraries(libs);
+          setStep('library');
           
-          // If we have a stored library, use it
-          if (storedLibrary) {
-            setSelectedLibrary(storedLibrary);
-            plexService.setSelectedLibrary(storedLibrary.id);
-            // Skip library selection and go directly to success
-            onSuccess(storedAuth, storedLibrary);
-            onClose();
-          } else {
-            setStep('library');
+          if (libs.length === 1) {
+            // Auto-select if only one library
+            handleLibrarySelect(libs[0]);
           }
         } catch (error) {
-          console.error('Failed to load libraries with stored auth:', error);
-          // Clear invalid stored auth
+          console.error('Failed to fetch libraries:', error);
+          // Clear invalid auth
           await clearPlexAuth();
+          setAuthConfig(null);
         }
       }
-    };
-    
-    loadStoredAuth();
-  }, []);
-
-  const handleOAuthSuccess = async (token: string) => {
-    try {
-      // Get user info using the token
-      const userResponse = await fetch('https://plex.tv/api/v2/user', {
-        headers: {
-          'X-Plex-Token': token,
-          'Accept': 'application/json',
-        },
-      });
-      
-      if (userResponse.ok) {
-        const userData = await userResponse.json();
-        const auth: PlexAuthConfig = {
-          token: token,
-          username: userData.username,
-          email: userData.email,
-        };
-        
-        setAuthConfig(auth);
-        plexService.setAuthConfig(auth);
-        
-        // Get available libraries
-        const libs = await plexService.getLibraries();
-        setLibraries(libs);
-        setStep('library');
-      } else {
-        throw new Error('Failed to get user information');
-      }
     } catch (error) {
-      console.error('OAuth success error:', error);
-      Alert.alert('Authentication Failed', 'Please try again');
-    } finally {
+      console.error('Failed to load existing auth:', error);
+    }
+  };
+
+  const createPin = async (): Promise<PlexPin> => {
+    console.log('Creating Plex PIN...');
+    
+    const response = await fetch('https://plex.tv/api/v2/pins', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'X-Plex-Client-Identifier': 'BookTracker-iOS',
+        'X-Plex-Product': 'BookTracker',
+        'X-Plex-Version': '1.0.2',
+        'X-Plex-Platform': 'iOS',
+        'X-Plex-Platform-Version': '17.0',
+        'X-Plex-Device': 'iPhone',
+        'X-Plex-Device-Name': 'iPhone',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to create PIN: ${response.status} ${response.statusText}`);
+    }
+
+    const pinData = await response.json();
+    console.log('PIN created:', pinData);
+    
+    return {
+      id: pinData.id,
+      code: pinData.code,
+    };
+  };
+
+  const pollPinStatus = async (pinId: number): Promise<string> => {
+    console.log('Polling PIN status...');
+    
+    const response = await fetch(`https://plex.tv/api/v2/pins/${pinId}`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'X-Plex-Client-Identifier': 'BookTracker-iOS',
+        'X-Plex-Product': 'BookTracker',
+        'X-Plex-Version': '1.0.2',
+        'X-Plex-Platform': 'iOS',
+        'X-Plex-Platform-Version': '17.0',
+        'X-Plex-Device': 'iPhone',
+        'X-Plex-Device-Name': 'iPhone',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to poll PIN: ${response.status} ${response.statusText}`);
+    }
+
+    const pinData = await response.json();
+    console.log('PIN status:', pinData);
+    
+    return pinData.authToken;
+  };
+
+  const getUserInfo = async (authToken: string) => {
+    console.log('Getting user info...');
+    
+    const response = await fetch('https://plex.tv/api/v2/user', {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'X-Plex-Token': authToken,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get user info: ${response.status} ${response.statusText}`);
+    }
+
+    const userData = await response.json();
+    console.log('User info:', userData);
+    
+    return userData;
+  };
+
+  const handleOAuthLogin = async () => {
+    setLoading(true);
+    
+    try {
+      console.log('Starting PIN-based login process...');
+      
+      // Create PIN
+      const newPin = await createPin();
+      setPin(newPin);
+      setLoading(false); // PIN created successfully, stop loading
+      
+      // PIN is now displayed in the UI, no need for alert
+      
+    } catch (error) {
+      console.error('PIN login error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      Alert.alert('Login Error', `Failed to start Plex login: ${errorMessage}`);
       setLoading(false);
     }
   };
 
-  const handleAuth = async () => {
-    setLoading(true);
+  const pollForToken = async (pinId: number) => {
+    setPolling(true);
     
     try {
-      console.log('Starting authentication process...');
+      let attempts = 0;
+      const maxAttempts = 30; // 30 seconds max
       
-      // Use direct token input - most reliable approach
-      Alert.prompt(
-        'Enter Plex Token',
-        'Please enter your Plex authentication token. You can find this by:\n\n1. Go to your Plex server in a browser\n2. Click any media item → three dots → Get Info\n3. Click "View XML" in bottom left\n4. Copy the token from the URL (far right)',
-        [
-          {
-            text: 'Cancel',
-            onPress: () => {
-              console.log('Authentication cancelled by user');
-              setLoading(false);
-            }
-          },
-          {
-            text: 'Connect',
-            onPress: async (token) => {
-              console.log('Token entered:', token ? token.substring(0, 10) + '...' : 'empty');
-              
-              if (!token) {
-                Alert.alert('Error', 'Please enter a valid token');
-                setLoading(false);
-                return;
-              }
-              
-              try {
-                console.log('Getting server URL from user...');
-                
-                // For server tokens, we need to test against the server directly
-                // First, let's get the server URL from the user
-                Alert.prompt(
-                  'Enter Server URL',
-                  'Please enter your Plex server URL (e.g., http://192.168.1.100:32400 or https://your-server.com:32400)',
-                  [
-                    {
-                      text: 'Cancel',
-                      onPress: () => {
-                        console.log('Server URL entry cancelled');
-                        setLoading(false);
-                      }
-                    },
-                    {
-                      text: 'Test Connection',
-                      onPress: async (serverUrl) => {
-                        console.log('Server URL entered:', serverUrl);
-                        if (!serverUrl) {
-                          Alert.alert('Error', 'Please enter a server URL');
-                          setLoading(false);
-                          return;
-                        }
-                        
-                        try {
-                          console.log('Testing connection to:', serverUrl);
-                          console.log('Using token:', token.substring(0, 10) + '...');
-                          
-                          // Test the token against the server directly
-                          const testUrl = `${serverUrl}/`;
-                          console.log('Full test URL:', testUrl);
-                          
-                          // Try HTTPS first if the URL is HTTP
-                          let serverResponse;
-                          let finalUrl = testUrl;
-                          
-                          if (serverUrl.startsWith('http://')) {
-                            const httpsUrl = serverUrl.replace('http://', 'https://');
-                            console.log('Trying HTTPS first:', httpsUrl);
-                            
-                            try {
-                              serverResponse = await fetch(`${httpsUrl}/`, {
-                                method: 'GET',
-                                headers: {
-                                  'X-Plex-Token': token,
-                                  'Accept': 'application/json',
-                                  'User-Agent': 'BookTracker/1.0.2',
-                                },
-                              });
-                              finalUrl = `${httpsUrl}/`;
-                              console.log('HTTPS connection successful');
-                            } catch (httpsError) {
-                              console.log('HTTPS failed, falling back to HTTP:', httpsError.message);
-                              serverResponse = await fetch(testUrl, {
-                                method: 'GET',
-                                headers: {
-                                  'X-Plex-Token': token,
-                                  'Accept': 'application/json',
-                                  'User-Agent': 'BookTracker/1.0.2',
-                                },
-                              });
-                            }
-                          } else {
-                            serverResponse = await fetch(testUrl, {
-                              method: 'GET',
-                              headers: {
-                                'X-Plex-Token': token,
-                                'Accept': 'application/json',
-                                'User-Agent': 'BookTracker/1.0.2',
-                              },
-                            });
-                          }
-                          
-                          console.log('Server response status:', serverResponse.status);
-                          console.log('Server response headers:', Object.fromEntries(serverResponse.headers.entries()));
-                          
-                          if (serverResponse.ok) {
-                            const serverData = await serverResponse.json();
-                            console.log('Server data received:', serverData);
-                            
-                            // Use the final URL that worked (HTTPS or HTTP)
-                            const workingServerUrl = finalUrl.endsWith('/') ? finalUrl.slice(0, -1) : finalUrl;
-                            
-                            const auth: PlexAuthConfig = {
-                              token: token,
-                              username: serverData.friendlyName || 'Plex Server',
-                              email: 'server@plex.local',
-                              serverUrl: workingServerUrl,
-                            };
-                            
-                            console.log('Created auth config:', auth);
-                            setAuthConfig(auth);
-                            plexService.setAuthConfig(auth);
-                            
-                            // Store the authentication data
-                            console.log('Storing auth data...');
-                            try {
-                              await storePlexAuth(auth);
-                              console.log('Auth data stored successfully');
-                            } catch (storageError) {
-                              console.error('Storage failed:', storageError);
-                              Alert.alert(
-                                'Storage Error', 
-                                `Failed to store authentication data: ${storageError.message}\n\nThis may be due to device storage restrictions.`
-                              );
-                              setLoading(false);
-                              return;
-                            }
-                            
-                            // Get available libraries from the server
-                            console.log('Fetching libraries...');
-                            const libs = await plexService.getLibraries();
-                            console.log('Libraries fetched:', libs.length);
-                            setLibraries(libs);
-                            setStep('library');
-                            
-                            Alert.alert('Success!', `Connected to Plex server "${auth.username}"\nFound ${libs.length} libraries`);
-                          } else {
-                            const errorText = await serverResponse.text();
-                            console.error('Server error response:', errorText);
-                            throw new Error(`Server returned ${serverResponse.status}: ${errorText}`);
-                          }
-                        } catch (error) {
-                          console.error('Server auth error:', error);
-                          const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-                          
-                          // Provide more specific error information
-                          let detailedMessage = `Error: ${errorMessage}\n\n`;
-                          
-                          if (errorMessage.includes('Network request failed')) {
-                            detailedMessage += 'This usually means:\n• ATS is blocking HTTP requests to public IP\n• Server is not accessible from internet\n• Firewall blocking connection\n• Server requires HTTPS instead of HTTP';
-                          } else if (errorMessage.includes('401') || errorMessage.includes('403')) {
-                            detailedMessage += 'This usually means:\n• Token is invalid or expired\n• Server requires authentication\n• Token format is incorrect';
-                          } else if (errorMessage.includes('404')) {
-                            detailedMessage += 'This usually means:\n• Server URL is incorrect\n• Server is not running\n• Wrong port number';
-                          } else {
-                            detailedMessage += 'Please check:\n• Server URL is correct (e.g., http://192.168.1.100:32400)\n• Token is valid\n• Server is accessible from your network';
-                          }
-                          
-                          Alert.alert('Authentication Failed', detailedMessage);
-                        } finally {
-                          setLoading(false);
-                        }
-                      }
-                    }
-                  ],
-                  'plain-text'
-                );
-              } catch (error) {
-                console.error('Token auth error:', error);
-                Alert.alert('Authentication Failed', 'Please check your token and try again');
-              } finally {
-                setLoading(false);
-              }
-            }
-          }
-        ],
-        'secure-text'
-      );
+      while (attempts < maxAttempts) {
+        console.log(`Polling attempt ${attempts + 1}/${maxAttempts}`);
+        
+        const authToken = await pollPinStatus(pinId);
+        
+        if (authToken) {
+          console.log('Auth token received:', authToken.substring(0, 10) + '...');
+          
+          // Get user info
+          const userInfo = await getUserInfo(authToken);
+          
+          // Create auth config
+          const auth: PlexAuthConfig = {
+            token: authToken,
+            username: userInfo.username,
+            email: userInfo.email,
+            serverUrl: '', // Will be set when server is selected
+          };
+          
+          console.log('Created auth config:', auth);
+          setAuthConfig(auth);
+          plexService.setAuthConfig(auth);
+          
+          // Store auth
+          await storePlexAuth(auth);
+          
+          // Get servers
+          const serverList = await plexService.getServers();
+          console.log('Servers fetched:', serverList.length);
+          setServers(serverList);
+          setStep('server');
+          return;
+        }
+        
+        // Wait 1 second before next poll
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        attempts++;
+      }
+      
+      throw new Error('Authentication timeout - please try again');
+      
     } catch (error) {
-      console.error('Auth error:', error);
-      Alert.alert('Authentication Failed', 'Please try again');
+      console.error('Token polling error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      Alert.alert('Authentication Failed', `Failed to complete authentication: ${errorMessage}`);
     } finally {
-      setLoading(false);
+      setPolling(false);
+    }
+  };
+
+  const handleServerSelect = async (server: any) => {
+    try {
+      addDebugInfo(`Server selected: ${server.name}`);
+      setSelectedServer(server);
+      
+      // Update auth config with server URL
+      if (authConfig) {
+        // Use HTTPS connection selection logic
+        const connections: PlexConnection[] = server.connections.map((conn: any) => ({
+          uri: conn.uri,
+          protocol: conn.protocol,
+          local: conn.local,
+          relay: conn.relay
+        }));
+        
+        // Pick the best HTTPS connection
+        const bestConnection = plexService['pickBestConnection'](connections);
+        const connection = bestConnection;
+        
+        
+        const serverUrl = connection?.uri;
+        
+        if (serverUrl) {
+          // Use the HTTPS connection URI as-is (remove any whitespace)
+          const formattedServerUrl = serverUrl.replace(/\s+/g, '');
+          
+          // Use the main auth token for direct server communication
+          const serverToken = authConfig.token;
+          
+          const updatedAuth = {
+            ...authConfig,
+            serverUrl: formattedServerUrl,
+            serverId: server.clientIdentifier,
+            serverName: server.name,
+            serverToken: serverToken,
+          };
+          setAuthConfig(updatedAuth);
+          plexService.setAuthConfig(updatedAuth);
+          await storePlexAuth(updatedAuth);
+          
+          // Get libraries from this server
+          const allLibs = await plexService.getLibraries();
+          // Filter to only show music libraries
+          const musicLibs = allLibs.filter(lib => lib.type === 'artist');
+          setLibraries(musicLibs);
+          setStep('library');
+        } else {
+          Alert.alert('Server Error', 'No accessible connection found for this server.');
+        }
+      }
+      
+    } catch (error) {
+      console.error('Server selection error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      addDebugInfo(`ERROR: ${errorMessage}`);
+      addDetailedError(error);
+      Alert.alert('Server Selection Error', `Failed to connect to server: ${errorMessage}\n\nDebug Info:\n${debugInfo}`);
     }
   };
 
   const handleLibrarySelect = async (library: PlexLibrary) => {
     try {
+      console.log('Library selected:', library);
       setSelectedLibrary(library);
       plexService.setSelectedLibrary(library.id);
+      
+      // Store library selection
       await storePlexLibrary(library);
-      console.log('Library selected and stored successfully');
+      
+      // Update auth config with server URL
+      if (authConfig && library.serverUrl) {
+        const updatedAuth = {
+          ...authConfig,
+          serverUrl: library.serverUrl,
+        };
+        setAuthConfig(updatedAuth);
+        plexService.setAuthConfig(updatedAuth);
+        await storePlexAuth(updatedAuth);
+      }
+      
+      console.log('Library selection complete');
+      onSuccess(authConfig!, library);
+      onClose();
+      
     } catch (error) {
-      console.error('Failed to store library selection:', error);
-      Alert.alert(
-        'Storage Error', 
-        `Failed to store library selection: ${error.message}\n\nYou can still use Plex features, but you'll need to select a library each time.`
-      );
+      console.error('Library selection error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      Alert.alert('Selection Error', `Failed to select library: ${errorMessage}`);
     }
   };
 
-  const handleComplete = () => {
-    if (authConfig) {
-      onSuccess(authConfig, selectedLibrary || undefined);
-      onClose();
+  const handleSignOut = async () => {
+    try {
+      await clearPlexAuth();
+      setAuthConfig(null);
+      setSelectedLibrary(null);
+      setLibraries([]);
+      setStep('auth');
+      console.log('Signed out successfully');
+    } catch (error) {
+      console.error('Sign out error:', error);
     }
   };
 
-  const handleSkipLibrary = () => {
-    if (authConfig) {
-      onSuccess(authConfig);
-      onClose();
-    }
-  };
-
-  const renderLibraryItem = ({ item }: { item: PlexLibrary }) => (
-    <TouchableOpacity
-      style={[
-        styles.libraryItem,
-        selectedLibrary?.id === item.id && styles.selectedLibraryItem
-      ]}
-      onPress={() => handleLibrarySelect(item)}
-    >
-      <ThemedText style={styles.libraryName}>{item.name}</ThemedText>
-      <ThemedText style={styles.libraryType}>{item.type}</ThemedText>
-    </TouchableOpacity>
-  );
-
-
-  
   return (
-    <>
-      <Modal
-        visible={visible}
-        transparent
-        animationType="fade"
-        onRequestClose={onClose}
-      >
-        <ThemedView style={styles.modalOverlay}>
-          <ThemedView style={[styles.modalContent, { paddingTop: insets.top + 20 }]}>
-            {step === 'auth' ? (
-              <>
-                <ThemedText type="title" style={styles.title}>
-                  Sign in to Plex
-                </ThemedText>
-                
-                <ThemedText style={styles.subtitle}>
-                  Enter your Plex authentication token
-                </ThemedText>
+    <Modal
+      visible={visible}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <ThemedView style={styles.modalOverlay}>
+        <ThemedView style={styles.modalContent}>
+          {step === 'auth' ? (
+            <>
+              <ThemedText type="title" style={styles.title}>
+                Sign in to Plex
+              </ThemedText>
+              
+              <ThemedText style={styles.subtitle}>
+                Connect your Plex account to discover books and sync progress
+              </ThemedText>
 
-                <ThemedView style={styles.authInfo}>
-                  <ThemedText style={styles.infoText}>
-                    • Go to your Plex server in a browser{'\n'}
-                    • Click any media item → three dots → Get Info{'\n'}
-                    • Click "View XML" in bottom left{'\n'}
-                    • Copy the token from the URL (far right)
+              {pin && (
+                <ThemedView style={styles.pinContainer}>
+                  <ThemedText style={styles.pinLabel}>PIN Code:</ThemedText>
+                  <TouchableOpacity 
+                    style={styles.pinCodeContainer}
+                    onPress={copyPinToClipboard}
+                    activeOpacity={0.7}
+                  >
+                    <ThemedText style={styles.pinCode}>{pin.code}</ThemedText>
+                    {pinCopied && (
+                      <ThemedView style={styles.copiedOverlay}>
+                        <ThemedText style={styles.copiedText}>✓ Copied!</ThemedText>
+                      </ThemedView>
+                    )}
+                  </TouchableOpacity>
+                  <ThemedText style={styles.pinInstructions}>
+                    1. Go to plex.tv/link in your browser{'\n'}
+                    2. Tap PIN above to copy, or enter manually{'\n'}
+                    3. Sign in to your Plex account{'\n'}
+                    4. Tap "I've Entered the PIN" below
                   </ThemedText>
                 </ThemedView>
+              )}
 
-                <ThemedView style={styles.buttonGroup}>
-                  <TouchableOpacity
-                    style={[styles.button, styles.authButton]}
-                    onPress={handleAuth}
-                    disabled={loading}
-                  >
-                    <ThemedText style={styles.buttonText}>
-                      {loading ? 'Connecting...' : 'Enter Token'}
-                    </ThemedText>
-                    {loading && <ActivityIndicator size="small" color="#fff" style={styles.buttonSpinner} />}
-                  </TouchableOpacity>
+              <ThemedView style={styles.buttonGroup}>
+                <TouchableOpacity
+                  style={[styles.button, styles.authButton]}
+                  onPress={pin ? () => {
+                    console.log('User confirmed PIN entry, starting to poll for token...');
+                    pollForToken(pin.id);
+                  } : handleOAuthLogin}
+                  disabled={polling}
+                >
+                  <ThemedText style={styles.buttonText}>
+                    {polling ? 'Waiting for Authentication...' : 
+                     pin ? 'I\'ve Entered the PIN' :
+                     loading ? 'Getting PIN...' :
+                     'Sign in with Plex'}
+                  </ThemedText>
+                  {polling && <ActivityIndicator size="small" color="#fff" style={styles.buttonSpinner} />}
+                </TouchableOpacity>
 
-                  <TouchableOpacity
-                    style={[styles.button, styles.cancelButton]}
-                    onPress={onClose}
-                  >
-                    <ThemedText style={styles.buttonText}>Cancel</ThemedText>
-                  </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.button, styles.cancelButton]}
+                  onPress={onClose}
+                >
+                  <ThemedText style={styles.buttonText}>Cancel</ThemedText>
+                </TouchableOpacity>
+              </ThemedView>
+            </>
+          ) : step === 'server' ? (
+            <>
+              <ThemedText style={styles.loginSuccessText}>
+                Login Successful!
+              </ThemedText>
+              
+              <ThemedText style={styles.serverSelectTitle}>
+                Select Server
+              </ThemedText>
+              
+              <ThemedText style={styles.subtitle}>
+                Choose which Plex server to connect to
+              </ThemedText>
+
+              {debugInfo ? (
+                <ThemedView style={styles.debugContainer}>
+                  <ThemedView style={styles.debugHeader}>
+                    <ThemedText style={styles.debugTitle}>Debug Info:</ThemedText>
+                    <TouchableOpacity onPress={() => setDebugInfo('')} style={styles.clearDebugButton}>
+                      <ThemedText style={styles.clearDebugText}>Clear</ThemedText>
+                    </TouchableOpacity>
+                  </ThemedView>
+                  <ThemedText style={styles.debugText}>{debugInfo}</ThemedText>
                 </ThemedView>
-              </>
-            ) : (
-              <>
-                <ThemedText type="title" style={styles.title}>
-                  Select Library
-                </ThemedText>
-                
-                <ThemedText style={styles.subtitle}>
-                  Choose which library to search for books
-                </ThemedText>
+              ) : null}
 
-                <FlatList
-                  data={libraries}
-                  renderItem={renderLibraryItem}
-                  keyExtractor={(item) => item.id}
-                  style={styles.libraryList}
-                  showsVerticalScrollIndicator={false}
-                  ListEmptyComponent={
-                    <ThemedView style={styles.emptyState}>
-                      <ThemedText style={styles.emptyText}>
-                        No libraries found
-                      </ThemedText>
+              <FlatList
+                data={servers}
+                keyExtractor={(item) => item.clientIdentifier}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.serverItem}
+                    onPress={() => handleServerSelect(item)}
+                  >
+                    <ThemedView style={styles.serverItemContent}>
+                      <PlexLogo size={28} />
+                      <ThemedText style={styles.serverName}>{item.name}</ThemedText>
                     </ThemedView>
-                  }
-                />
-
-                <ThemedView style={styles.buttonGroup}>
-                  <TouchableOpacity
-                    style={[styles.button, styles.completeButton]}
-                    onPress={handleComplete}
-                    disabled={!selectedLibrary}
-                  >
-                    <ThemedText style={styles.buttonText}>
-                      Continue with {selectedLibrary?.name || 'Library'}
-                    </ThemedText>
                   </TouchableOpacity>
+                )}
+                style={styles.serverList}
+              />
 
-                  <TouchableOpacity
-                    style={[styles.button, styles.skipButton]}
-                    onPress={handleSkipLibrary}
-                  >
-                    <ThemedText style={styles.buttonText}>Skip Library Selection</ThemedText>
-                  </TouchableOpacity>
+              <ThemedView style={styles.buttonGroup}>
+                <TouchableOpacity
+                  style={[styles.button, styles.cancelButton]}
+                  onPress={onClose}
+                >
+                  <ThemedText style={styles.buttonText}>Cancel</ThemedText>
+                </TouchableOpacity>
+              </ThemedView>
+            </>
+          ) : (
+            <>
+              <ThemedText type="title" style={styles.title}>
+                Select Library
+              </ThemedText>
+              
+              <ThemedText style={styles.subtitle}>
+                Choose which music library to use for audiobook discovery
+              </ThemedText>
 
+              <FlatList
+                data={libraries}
+                keyExtractor={(item) => item.id.toString()}
+                renderItem={({ item }) => (
                   <TouchableOpacity
-                    style={[styles.button, styles.backButton]}
-                    onPress={() => setStep('auth')}
+                    style={styles.libraryItem}
+                    onPress={() => handleLibrarySelect(item)}
                   >
-                    <ThemedText style={styles.buttonText}>Back to Auth</ThemedText>
+                    <ThemedText style={styles.libraryName}>{item.name}</ThemedText>
                   </TouchableOpacity>
-                </ThemedView>
-              </>
-            )}
-          </ThemedView>
+                )}
+                style={styles.libraryList}
+              />
+
+              <ThemedView style={styles.buttonGroup}>
+                <TouchableOpacity
+                  style={[styles.button, styles.cancelButton]}
+                  onPress={onClose}
+                >
+                  <ThemedText style={styles.buttonText}>Cancel</ThemedText>
+                </TouchableOpacity>
+              </ThemedView>
+            </>
+          )}
         </ThemedView>
-      </Modal>
-    </>
+      </ThemedView>
+    </Modal>
   );
 };
 
@@ -542,73 +642,161 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
   },
   modalContent: {
     backgroundColor: '#1a1a1a',
     borderRadius: 16,
-    padding: 24,
-    width: '100%',
+    padding: 20,
+    margin: 16,
     maxWidth: 400,
+    width: '90%',
     maxHeight: '90%',
   },
   title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 8,
+    color: '#ECEDEE',
+  },
+  loginSuccessText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#8E8E93',
     textAlign: 'center',
     marginBottom: 8,
   },
-  subtitle: {
+  serverSelectTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#ECEDEE',
     textAlign: 'center',
-    marginBottom: 24,
-    opacity: 0.7,
-    fontSize: 14,
+    marginBottom: 16,
   },
-  authInfo: {
+  debugContainer: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: 8,
-    padding: 16,
-    marginBottom: 24,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  infoText: {
+  debugHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  debugTitle: {
     fontSize: 14,
+    fontWeight: '600',
     color: '#ECEDEE',
+  },
+  clearDebugButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+  },
+  clearDebugText: {
+    fontSize: 12,
+    color: '#ECEDEE',
+  },
+  debugText: {
+    fontSize: 12,
+    color: '#8E8E93',
+    fontFamily: 'monospace',
+    lineHeight: 16,
+  },
+  subtitle: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 16,
+    color: '#8E8E93',
+    lineHeight: 22,
+  },
+  pinContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+    minHeight: 120,
+  },
+  pinLabel: {
+    fontSize: 14,
+    color: '#8E8E93',
+    marginBottom: 8,
+  },
+  pinCodeContainer: {
+    alignItems: 'center',
+    marginTop: 4,
+    marginBottom: 12,
+    position: 'relative',
+  },
+  pinCode: {
+    fontSize: 36,
+    fontWeight: 'bold',
+    color: '#E5A00D',
+    letterSpacing: 4,
+    lineHeight: 40,
+  },
+  copiedOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  copiedText: {
+    fontSize: 16,
+    color: '#50b042',
+    fontWeight: '600',
+  },
+  pinInstructions: {
+    fontSize: 14,
+    color: '#8E8E93',
+    textAlign: 'left',
     lineHeight: 20,
+    marginTop: 8,
   },
   buttonGroup: {
     gap: 12,
   },
   button: {
+    borderRadius: 12,
     padding: 16,
-    borderRadius: 8,
     alignItems: 'center',
-    flexDirection: 'row',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
   },
   authButton: {
-    backgroundColor: '#007AFF',
-  },
-  completeButton: {
-    backgroundColor: '#50b042',
-  },
-  skipButton: {
-    backgroundColor: '#6c757d',
-  },
-  backButton: {
-    backgroundColor: '#6c757d',
+    backgroundColor: '#E5A00D',
   },
   cancelButton: {
-    backgroundColor: '#6c757d',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  signOutButton: {
+    backgroundColor: '#FF3B30',
   },
   buttonText: {
-    color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+    color: '#FFFFFF',
   },
   buttonSpinner: {
     marginLeft: 8,
   },
   libraryList: {
-    maxHeight: 300,
-    marginBottom: 16,
+    maxHeight: 200,
+    marginBottom: 24,
   },
   libraryItem: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
@@ -618,29 +806,36 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  selectedLibraryItem: {
-    backgroundColor: 'rgba(80, 176, 66, 0.2)',
-    borderColor: '#50b042',
-  },
   libraryName: {
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '600',
     color: '#ECEDEE',
-    marginBottom: 4,
   },
   libraryType: {
     fontSize: 14,
-    color: '#ECEDEE',
-    opacity: 0.7,
+    color: '#8E8E93',
   },
-  emptyState: {
+  serverList: {
+    maxHeight: 200,
+    marginBottom: 24,
+  },
+  serverItem: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  serverItemContent: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 40,
+    gap: 12,
   },
-  emptyText: {
-    fontSize: 16,
+  serverName: {
+    fontSize: 20,
+    fontWeight: '600',
     color: '#ECEDEE',
-    opacity: 0.6,
-    textAlign: 'center',
+    flex: 1,
   },
 });

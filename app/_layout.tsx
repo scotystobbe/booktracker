@@ -4,15 +4,25 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
+import { useEffect } from 'react';
 
 import { BookProvider } from '@/context/BookContext';
 import { useColorScheme } from '@/hooks/useColorScheme';
+import { plexService } from '@/services/PlexService';
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const [loaded] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
   });
+
+  // Automatically refresh Plex auth from storage on app load
+  useEffect(() => {
+    plexService.refreshAuthFromStorage().catch((error) => {
+      // Silently fail - auth will be refreshed when needed
+      console.log('Background auth refresh on app load:', error.message);
+    });
+  }, []);
 
   if (!loaded) {
     // Async font loading only occurs in development.

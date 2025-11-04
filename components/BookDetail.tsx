@@ -18,6 +18,22 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onEdit, onBack }) 
   const { updateBook, deleteBook } = useBooks();
   const insets = useSafeAreaInsets();
 
+  const formatReadingSpeed = (speed: number): string => {
+    // If it's a whole number, show no decimal places
+    if (speed % 1 === 0) {
+      return speed.toString();
+    }
+    
+    // If it's a perfect tenth (e.g., 1.8, 1.9), show one decimal place
+    const roundedToOneDecimal = Math.round(speed * 10) / 10;
+    if (Math.abs(speed - roundedToOneDecimal) < 0.001) {
+      return speed.toFixed(1);
+    }
+    
+    // Otherwise, show up to 2 decimal places
+    return speed.toFixed(2);
+  };
+
   const handleMarkAsFinished = () => {
     Alert.alert(
       'Mark as Finished',
@@ -144,7 +160,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onEdit, onBack }) 
                 Reading Speed:
               </ThemedText>
               <ThemedText style={styles.detailValue}>
-                {book.reading_speed} pages/hour
+                {formatReadingSpeed(book.reading_speed)}x
               </ThemedText>
             </ThemedView>
 

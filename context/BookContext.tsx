@@ -104,17 +104,28 @@ export const BookProvider: React.FC<BookProviderProps> = ({ children }) => {
         ...bookData,
       };
 
-      // Download and resize the cover image (only if cover URL is provided)
-      if (bookData.cover_url) {
-        const localImagePath = await imageService.downloadAndResizeImage(
-          bookData.cover_url,
-          newBook.id
-        );
-        newBook.local_cover_path = localImagePath;
-      }
-      
+      // Save the book first (without waiting for image download)
       await databaseService.createBook(newBook);
       await loadBooks(); // Reload books from database
+      
+      // Download and resize the cover image in the background (only if cover URL is provided)
+      if (bookData.cover_url) {
+        // Don't await - let it download in the background
+        imageService.downloadAndResizeImage(
+          bookData.cover_url,
+          newBook.id
+        ).then((localImagePath) => {
+          // Update the book with the local image path once downloaded
+          updateBook(newBook.id, {
+            local_cover_path: localImagePath,
+          }).catch((error) => {
+            console.error('Failed to update book with local image path:', error);
+          });
+        }).catch((error) => {
+          console.error('Failed to download image in background:', error);
+          // Don't throw - book is already saved, image can be downloaded later
+        });
+      }
     } catch (error) {
       console.error('Failed to add book:', error);
       throw error;
@@ -123,8 +134,9 @@ export const BookProvider: React.FC<BookProviderProps> = ({ children }) => {
 
   const updateBook = async (id: string, bookData: UpdateBookData) => {
     try {
-      // If cover URL is being updated, download the new image (only if URL is provided)
-      if (bookData.cover_url && bookData.cover_url.trim()) {
+      // If cover URL is being updated, download the new image (only if URL is provided and local_cover_path is not)
+      // Skip download if local_cover_path is already provided (e.g., from refresh artwork)
+      if (bookData.cover_url && bookData.cover_url.trim() && !bookData.local_cover_path) {
         const localImagePath = await imageService.downloadAndResizeImage(
           bookData.cover_url,
           id

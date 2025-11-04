@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 export interface PlexBook {
   id: string;
   title: string;
@@ -13,6 +15,9 @@ export interface PlexLibrary {
   id: string;
   name: string;
   type: string;
+  serverId?: string;
+  serverName?: string;
+  serverUrl?: string;
 }
 
 export interface PlexServerConfig {
@@ -26,6 +31,16 @@ export interface PlexAuthConfig {
   username: string;
   email: string;
   serverUrl?: string;
+  serverId?: string;
+  serverName?: string;
+  serverToken?: string;
+}
+
+export interface PlexConnection {
+  uri: string;
+  protocol: 'http' | 'https';
+  local: boolean;
+  relay: boolean;
 }
 
 class PlexService {
@@ -51,6 +66,71 @@ class PlexService {
     return this.authConfig;
   }
 
+  async refreshAuthFromStorage(): Promise<boolean> {
+    try {
+      // Load auth from AsyncStorage (same as PlexOAuth does)
+      const authData = await AsyncStorage.getItem('plex_auth');
+      const libraryData = await AsyncStorage.getItem('plex_library');
+      
+      if (authData) {
+        const authConfig = JSON.parse(authData);
+        console.log('Refreshing Plex auth from storage:', authConfig.username);
+        this.setAuthConfig(authConfig);
+        
+        if (libraryData) {
+          const library = JSON.parse(libraryData);
+          this.setSelectedLibrary(library.id);
+          console.log('Refreshed Plex library:', library.name);
+        }
+        
+        return true;
+      }
+      
+      console.log('No stored Plex auth found');
+      return false;
+    } catch (error) {
+      console.error('Failed to refresh Plex auth from storage:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Ensures auth is loaded from storage if not already set.
+   * This should be called before any Plex operation that requires auth.
+   * Returns true if auth is available (either was already set or refreshed from storage).
+   * Returns false if no auth is available and refresh failed.
+   */
+  async ensureAuth(): Promise<boolean> {
+    // If auth is already configured, we're good
+    if (this.authConfig) {
+      return true;
+    }
+
+    // Try to refresh from storage silently
+    console.log('Auth not configured, attempting to refresh from storage...');
+    const refreshed = await this.refreshAuthFromStorage();
+    
+    if (refreshed) {
+      console.log('Auth refreshed successfully from storage');
+      return true;
+    }
+
+    // Check if auth exists in storage but failed to parse
+    try {
+      const authData = await AsyncStorage.getItem('plex_auth');
+      if (authData) {
+        console.log('Auth exists in storage but failed to load - may need re-authentication');
+        // Auth exists but failed to load - might need full re-auth
+        return false;
+      }
+    } catch (error) {
+      // Ignore storage read errors
+    }
+
+    console.log('No auth available in storage');
+    return false;
+  }
+
   setSelectedLibrary(libraryId: string) {
     this.selectedLibraryId = libraryId;
   }
@@ -59,7 +139,58 @@ class PlexService {
     return this.selectedLibraryId;
   }
 
+  private async makeRequestWithAuthRetry(endpoint: string, useAuthToken: boolean = false, retryCount: number = 0): Promise<any> {
+    try {
+      return await this.makeRequest(endpoint, useAuthToken);
+    } catch (error) {
+      // If this is an auth error and we haven't retried yet, try refreshing auth
+      if (retryCount === 0 && this.isAuthError(error)) {
+        console.log('Auth error detected, attempting to refresh authentication...');
+        const refreshed = await this.refreshAuthFromStorage();
+        
+        if (refreshed) {
+          console.log('Auth refreshed, retrying request...');
+          return await this.makeRequestWithAuthRetry(endpoint, useAuthToken, 1);
+        }
+      }
+      
+      // If it's a "Plex not configured" error and we haven't retried, try refreshing
+      if (retryCount === 0 && error.message === 'Plex not configured') {
+        console.log('Plex not configured error, attempting to refresh from storage...');
+        const refreshed = await this.refreshAuthFromStorage();
+        
+        if (refreshed) {
+          console.log('Auth refreshed, retrying request...');
+          return await this.makeRequestWithAuthRetry(endpoint, useAuthToken, 1);
+        }
+      }
+      
+      throw error;
+    }
+  }
+
+  private isAuthError(error: any): boolean {
+    // Check for common auth error patterns
+    const errorMessage = error.message || '';
+    return (
+      errorMessage.includes('401') ||
+      errorMessage.includes('Unauthorized') ||
+      errorMessage.includes('Invalid token') ||
+      errorMessage.includes('Authentication failed')
+    );
+  }
+
   private async makeRequest(endpoint: string, useAuthToken: boolean = false): Promise<any> {
+    // Automatically refresh auth from storage if not configured
+    // Only refresh if we need auth (not for local server config)
+    if (!this.authConfig && !this.config) {
+      const refreshed = await this.refreshAuthFromStorage();
+      if (!refreshed) {
+        console.error('Plex not configured - no auth or config available, and refresh failed');
+        throw new Error('Plex not configured');
+      }
+    }
+
     let token: string;
     let baseUrl: string;
 
@@ -73,10 +204,9 @@ class PlexService {
       baseUrl = 'https://plex.tv';
       console.log('Using Plex.tv API with auth token');
     } else if (this.authConfig?.serverUrl) {
-      // Use server URL from auth config
-      token = this.authConfig.token;
+      // Use server URL from auth config with server-specific token
+      token = this.authConfig.serverToken || this.authConfig.token;
       baseUrl = this.authConfig.serverUrl;
-      console.log('Using server URL from auth config:', baseUrl);
     } else if (this.config) {
       // Use local server with server token
       token = this.config.token;
@@ -88,31 +218,135 @@ class PlexService {
     }
 
     const url = `${baseUrl}${endpoint}`;
-    const headers = {
+    console.log('Making request to URL:', url);
+    console.log('Using token:', token ? `${token.substring(0, 8)}...` : 'none');
+    const headers: any = {
       'X-Plex-Token': token,
       'Accept': 'application/json',
     };
 
-    console.log('Making Plex request:', url);
-    console.log('Using token:', token.substring(0, 10) + '...');
+    // Add required headers for plex.tv API requests
+    if (useAuthToken && baseUrl === 'https://plex.tv') {
+      headers['X-Plex-Client-Identifier'] = 'BookTracker-iOS';
+      headers['X-Plex-Product'] = 'BookTracker';
+      headers['X-Plex-Version'] = '1.0.2';
+      headers['X-Plex-Platform'] = 'iOS';
+      headers['X-Plex-Platform-Version'] = '17.0';
+      headers['X-Plex-Device'] = 'iPhone';
+      headers['X-Plex-Device-Name'] = 'iPhone';
+    }
+
 
     try {
+      // Try fetch first
       const response = await fetch(url, { headers });
-      console.log('Response status:', response.status);
       
       if (!response.ok) {
         const errorText = await response.text();
         console.error('Plex API error response:', errorText);
+        console.error('Request URL:', url);
+        console.error('Response status:', response.status, response.statusText);
+        console.error('Response headers:', Object.fromEntries(response.headers.entries()));
         throw new Error(`Plex API error: ${response.status} - ${errorText}`);
       }
       
       const data = await response.json();
-      console.log('Plex API response keys:', Object.keys(data));
       return data;
     } catch (error) {
       console.error('Plex API request failed:', error);
+      console.error('Request URL:', url);
+      console.error('Request headers:', headers);
+      console.error('Error name:', error.name);
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+      console.error('Error cause:', error.cause);
+      
+      // Try to get more details about the network error
+      if (error.name === 'TypeError' && error.message.includes('Network request failed')) {
+        console.error('This is a network connectivity issue - likely ATS or DNS');
+        console.error('URL being requested:', url);
+        console.error('Is HTTPS:', url.startsWith('https://'));
+        console.error('Is HTTP:', url.startsWith('http://'));
+        
+        // Try XMLHttpRequest as fallback
+        console.error('Trying XMLHttpRequest as fallback...');
+        try {
+          const xhrData = await this.makeXHRRequest(url, headers);
+          console.error('XMLHttpRequest succeeded!');
+          return xhrData;
+        } catch (xhrError) {
+          console.error('XMLHttpRequest also failed:', xhrError);
+          throw error; // Throw original error
+        }
+      }
+      
       throw error;
     }
+  }
+
+  private async makeXHRRequest(url: string, headers: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState === 4) {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              resolve(data);
+            } catch (parseError) {
+              reject(new Error(`Failed to parse response: ${parseError.message}`));
+            }
+          } else {
+            reject(new Error(`XMLHttpRequest failed: ${xhr.status} - ${xhr.statusText}`));
+          }
+        }
+      };
+      
+      xhr.onerror = () => {
+        reject(new Error(`XMLHttpRequest network error`));
+      };
+      
+      xhr.ontimeout = () => {
+        reject(new Error(`XMLHttpRequest timeout`));
+      };
+      
+      xhr.open('GET', url, true);
+      xhr.timeout = 10000; // 10 second timeout
+      
+      // Set headers
+      Object.keys(headers).forEach(key => {
+        xhr.setRequestHeader(key, headers[key]);
+      });
+      
+      xhr.send();
+    });
+  }
+
+  private pickBestConnection(connections: PlexConnection[]): PlexConnection | null {
+    if (!connections || connections.length === 0) {
+      return null;
+    }
+
+    // Filter HTTPS connections
+    const httpsConnections = connections.filter(c => c.protocol === 'https');
+    
+    if (httpsConnections.length === 0) {
+      console.warn('No HTTPS connections available - this may cause ATS issues in EAS builds');
+      return connections[0]; // Fallback to first connection
+    }
+
+    // Rank HTTPS connections by preference:
+    // 1. HTTPS + not local + not relay (public HTTPS) - prefer public connections
+    // 2. HTTPS + local + not relay (direct LAN HTTPS)
+    // 3. HTTPS + relay (relay HTTPS)
+    const ranked = [
+      ...httpsConnections.filter(c => !c.local && !c.relay),
+      ...httpsConnections.filter(c => c.local && !c.relay),
+      ...httpsConnections.filter(c => c.relay),
+    ];
+
+    return ranked[0];
   }
 
   async getServers(): Promise<any[]> {
@@ -120,54 +354,25 @@ class PlexService {
       throw new Error('Plex authentication required');
     }
 
-    const data = await this.makeRequest('/api/v2/resources', true);
+    // Request HTTPS connections and relay connections
+    const data = await this.makeRequestWithAuthRetry('/api/v2/resources?includeHttps=1&includeRelay=1', true);
     return data.filter((resource: any) => resource.provides === 'server');
   }
 
   async getLibraries(serverId?: string): Promise<PlexLibrary[]> {
     if (this.authConfig?.serverUrl) {
       // Get libraries from server URL in auth config
-      const data = await this.makeRequest(`/library/sections`, false);
+      const data = await this.makeRequestWithAuthRetry(`/library/sections`, false);
       return data.MediaContainer.Directory.map((lib: any) => ({
         id: lib.key,
         name: lib.title,
         type: lib.type,
-      }));
-    } else if (serverId) {
-      // Get libraries from specific server
-      const data = await this.makeRequest(`/library/sections`);
-      return data.MediaContainer.Directory.map((lib: any) => ({
-        id: lib.key,
-        name: lib.title,
-        type: lib.type,
+        serverId: this.authConfig?.serverId,
+        serverName: this.authConfig?.serverName,
+        serverUrl: this.authConfig.serverUrl,
       }));
     } else {
-      // Get libraries from authenticated user's servers
-      const servers = await this.getServers();
-      const allLibraries: PlexLibrary[] = [];
-      
-      for (const server of servers) {
-        try {
-          const serverUrl = server.connections.find((conn: any) => conn.local === false)?.uri || 
-                           server.connections.find((conn: any) => conn.local === true)?.uri;
-          
-          if (serverUrl) {
-            const data = await this.makeRequest(`/library/sections`, false);
-            const serverLibraries = data.MediaContainer.Directory.map((lib: any) => ({
-              id: lib.key,
-              name: `${lib.title} (${server.name})`,
-              type: lib.type,
-              serverId: server.clientIdentifier,
-              serverName: server.name,
-            }));
-            allLibraries.push(...serverLibraries);
-          }
-        } catch (error) {
-          console.error(`Failed to get libraries from server ${server.name}:`, error);
-        }
-      }
-      
-      return allLibraries;
+      throw new Error('No server URL configured - cannot get libraries');
     }
   }
 
@@ -207,7 +412,7 @@ class PlexService {
       if (searchMode === 'author') {
         // For author searches, try album search first (albums have artist info)
         console.log('Searching for author in albums:', query);
-        data = await this.makeRequest(`/library/sections/${libId}/search?query=${encodedQuery}&type=9`);
+        data = await this.makeRequestWithAuthRetry(`/library/sections/${libId}/search?query=${encodedQuery}&type=9`);
         searchMethod = 'album';
         
         // Check if search was cancelled
@@ -221,13 +426,13 @@ class PlexService {
         } else {
           // Only try artist search if no album results
           console.log('No album results, trying artist search...');
-          data = await this.makeRequest(`/library/sections/${libId}/search?query=${encodedQuery}&type=8`);
+          data = await this.makeRequestWithAuthRetry(`/library/sections/${libId}/search?query=${encodedQuery}&type=8`);
           searchMethod = 'artist';
         }
       } else {
         // For title searches, try album search first
         console.log('Searching for book title:', query);
-        data = await this.makeRequest(`/library/sections/${libId}/search?query=${encodedQuery}&type=9`);
+        data = await this.makeRequestWithAuthRetry(`/library/sections/${libId}/search?query=${encodedQuery}&type=9`);
         searchMethod = 'album';
         
         // Check if search was cancelled
@@ -431,31 +636,75 @@ class PlexService {
 
   async getBookProgress(bookId: string): Promise<number> {
     try {
-      // Get album details including tracks
-      const albumData = await this.makeRequest(`/library/metadata/${bookId}/children`);
+      // Get album details including tracks first
+      const albumData = await this.makeRequestWithAuthRetry(`/library/metadata/${bookId}/children`);
       
       if (!albumData.MediaContainer?.Metadata) {
+        // No tracks found, check album-level completion
+        const albumInfo = await this.makeRequestWithAuthRetry(`/library/metadata/${bookId}`);
+        if (albumInfo.MediaContainer?.Metadata?.[0]) {
+          const album = albumInfo.MediaContainer.Metadata[0];
+          if (album.viewedAt || (album.viewCount && album.viewCount > 0)) {
+            console.log(`Album "${album.title}" marked as watched/completed at album level (no tracks)`);
+            return 100;
+          }
+        }
         return 0;
       }
 
       // Calculate total progress from all tracks
       let totalProgress = 0;
       let totalTracks = 0;
+      let completedTracks = 0;
+      let tracksWithProgress = 0;
 
       for (const track of albumData.MediaContainer.Metadata) {
         if (track.type === 'track' || track.type === '10') {
           totalTracks++;
           
-          // Calculate progress for this track
-          if (track.viewOffset && track.duration) {
+          // Check if track has been marked as watched (completed)
+          if (track.viewedAt) {
+            completedTracks++;
+            totalProgress += 100; // Count as 100% complete
+            tracksWithProgress++;
+            console.log(`Track "${track.title}" marked as watched at ${track.viewedAt}`);
+          } else if (track.viewOffset && track.duration) {
+            // Calculate progress for this track based on playback position
             const trackProgress = (track.viewOffset / track.duration) * 100;
             totalProgress += trackProgress;
+            tracksWithProgress++;
+            console.log(`Track "${track.title}" progress: ${trackProgress.toFixed(1)}%`);
           }
         }
       }
 
-      // Return average progress across all tracks
-      return totalTracks > 0 ? Math.round(totalProgress / totalTracks) : 0;
+      // If we have track-level progress data, use it (even if album has viewedAt)
+      if (tracksWithProgress > 0) {
+        // If all tracks are completed, return 100%
+        if (completedTracks === totalTracks && totalTracks > 0) {
+          console.log(`All ${totalTracks} tracks completed - returning 100%`);
+          return 100;
+        }
+
+        // Return average progress across all tracks
+        const averageProgress = totalTracks > 0 ? Math.round(totalProgress / totalTracks) : 0;
+        console.log(`Book progress: ${averageProgress}% (${completedTracks}/${totalTracks} tracks completed)`);
+        return averageProgress;
+      }
+
+      // No track-level progress found, check album-level completion as fallback
+      const albumInfo = await this.makeRequestWithAuthRetry(`/library/metadata/${bookId}`);
+      if (albumInfo.MediaContainer?.Metadata?.[0]) {
+        const album = albumInfo.MediaContainer.Metadata[0];
+        
+        // Check if album is marked as watched/completed at the album level
+        if (album.viewedAt || (album.viewCount && album.viewCount > 0)) {
+          console.log(`Album "${album.title}" marked as watched/completed at album level (no track progress)`);
+          return 100;
+        }
+      }
+
+      return 0;
     } catch (error) {
       console.error('Failed to get book progress:', error);
       return 0;

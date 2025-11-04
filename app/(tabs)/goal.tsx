@@ -14,6 +14,7 @@ export default function GoalScreen() {
   const [showGoalModal, setShowGoalModal] = useState(false);
   const [tempGoal, setTempGoal] = useState('');
   const [showHighestValues, setShowHighestValues] = useState(false);
+  const [showDecimalHours, setShowDecimalHours] = useState(false);
 
   // Get completed books for this year
   const completedBooks = books.filter(book => 
@@ -65,7 +66,14 @@ export default function GoalScreen() {
   // Calculate projected values based on current pace
   const totalBookHoursCompleted = completedBooks.reduce((sum, book) => sum + book.duration, 0);
   const projectedHoursRead = daysElapsedThisYear > 0 ? (totalBookHoursCompleted / daysElapsedThisYear) * totalDaysInYear : 0;
-  const projectedBooksRead = daysElapsedThisYear > 0 ? (completedBooks.length / daysElapsedThisYear) * totalDaysInYear : 0;
+  const projectedBooksAtCurrentPace = daysElapsedThisYear > 0 ? (completedBooks.length / daysElapsedThisYear) * totalDaysInYear : 0;
+
+  // Calculate projected books at 1.0 hours per day
+  // This assumes 2.0x reading speed (same as target calculation)
+  const hoursPerDayAt1Hr = 1.0;
+  const remainingHoursAt1HrPerDay = hoursPerDayAt1Hr * daysRemainingThisYear;
+  const remainingBooksAt1HrPerDay = averageBookLength > 0 ? remainingHoursAt1HrPerDay / averageBookLength : 0;
+  const projectedBooksAt1HrPerDay = completedBooks.length + remainingBooksAt1HrPerDay;
 
   // Calculate days without active book
   const daysWithoutActiveBook = useMemo(() => {
@@ -255,14 +263,20 @@ export default function GoalScreen() {
             <ThemedText style={styles.metadataValue}>{averageDaysPerBook.toFixed(1)}</ThemedText>
           </ThemedView>
           
-          <ThemedView style={styles.metadataCard}>
+          <TouchableOpacity 
+            style={styles.metadataCard} 
+            onPress={() => setShowDecimalHours(!showDecimalHours)}
+            activeOpacity={0.7}
+          >
             <ThemedText style={styles.metadataLabel}>True Hours per Day</ThemedText>
-            <ThemedText style={styles.metadataValue}>{formatHoursAndMinutes(trueHoursPerDay)}</ThemedText>
-          </ThemedView>
+            <ThemedText style={styles.metadataValue}>
+              {showDecimalHours ? trueHoursPerDay.toFixed(2) : formatHoursAndMinutes(trueHoursPerDay)}
+            </ThemedText>
+          </TouchableOpacity>
           
           <ThemedView style={styles.metadataCard}>
             <ThemedText style={styles.metadataLabel}>Target Hrs{'\n'}per Day</ThemedText>
-            <ThemedText style={styles.metadataValue}>{targetHoursPerDay.toFixed(1)}</ThemedText>
+            <ThemedText style={styles.metadataValue}>{targetHoursPerDay.toFixed(2)}</ThemedText>
           </ThemedView>
         </ThemedView>
 
@@ -274,7 +288,7 @@ export default function GoalScreen() {
             activeOpacity={0.7}
           >
             <ThemedText style={styles.projectedLabel}>
-              {showHighestValues ? 'Highest Hours Read' : 'Projected Hours Read'}
+              {showHighestValues ? 'Highest Hours Read' : 'Proj. Hrs at Current Pace'}
             </ThemedText>
             <ThemedText style={styles.projectedValue}>
               {showHighestValues ? highestHours.toFixed(1) : projectedHoursRead.toFixed(1)}
@@ -287,10 +301,10 @@ export default function GoalScreen() {
             activeOpacity={0.7}
           >
             <ThemedText style={styles.projectedLabel}>
-              {showHighestValues ? 'Highest Books Read' : 'Projected Books Read'}
+              {showHighestValues ? 'Highest Books Read' : 'Proj. Bks at Current Pace'}
             </ThemedText>
             <ThemedText style={styles.projectedValue}>
-              {showHighestValues ? highestBooks.toFixed(1) : projectedBooksRead.toFixed(1)}
+              {showHighestValues ? Math.floor(highestBooks) : Math.floor(projectedBooksAtCurrentPace)}
             </ThemedText>
           </TouchableOpacity>
         </ThemedView>
@@ -303,8 +317,8 @@ export default function GoalScreen() {
           </ThemedView>
           
           <ThemedView style={styles.projectedCard}>
-            <ThemedText style={styles.projectedLabel}></ThemedText>
-            <ThemedText style={styles.projectedValue}></ThemedText>
+            <ThemedText style={styles.projectedLabel}>Proj. Bks at 1 hr/day</ThemedText>
+            <ThemedText style={styles.projectedValue}>{Math.floor(projectedBooksAt1HrPerDay)}</ThemedText>
           </ThemedView>
         </ThemedView>
       </ThemedView>

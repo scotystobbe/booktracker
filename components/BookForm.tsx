@@ -3,9 +3,11 @@ import { PlexBookSearch } from '@/components/PlexBookSearch';
 import { PlexOAuth } from '@/components/PlexOAuth';
 import { ThemedText } from '@/components/ThemedText';
 import { ThemedView } from '@/components/ThemedView';
+import { IconSymbol } from '@/components/ui/IconSymbol';
 import { useBooks } from '@/context/BookContext';
 import { PlexAuthConfig, PlexBook, PlexLibrary, plexService } from '@/services/PlexService';
 import { Book } from '@/types/Book';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import React, { useEffect, useState } from 'react';
 import {
@@ -19,12 +21,15 @@ import {
     View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SvgXml } from 'react-native-svg';
 
 interface BookFormProps {
   book?: Book;
   onSave: () => void;
   onCancel: () => void;
 }
+
+const PlexLogoSvg = `<svg xmlns="http://www.w3.org/2000/svg" id="mdi-plex" viewBox="0 0 24 24"><path d="M4,2C2.89,2 2,2.89 2,4V20C2,21.11 2.89,22 4,22H20C21.11,22 22,21.11 22,20V4C22,2.89 21.11,2 20,2H4M8.56,6H12.06L15.5,12L12.06,18H8.56L12,12L8.56,6Z" /></svg>`;
 
 export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) => {
   const { addBook, updateBook } = useBooks();
@@ -73,6 +78,32 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
     }
   }, [book]);
 
+  // Load Plex auth state on mount
+  useEffect(() => {
+    const loadPlexAuth = async () => {
+      try {
+        const authData = await AsyncStorage.getItem('plex_auth');
+        if (authData) {
+          const auth = JSON.parse(authData);
+          setPlexAuthConfig(auth);
+          plexService.setAuthConfig(auth);
+          
+          // Also load library if available
+          const libraryData = await AsyncStorage.getItem('plex_library');
+          if (libraryData) {
+            const library = JSON.parse(libraryData);
+            setSelectedLibrary(library);
+            plexService.setSelectedLibrary(library.id);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load Plex auth in BookForm:', error);
+      }
+    };
+    
+    loadPlexAuth();
+  }, []);
+
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
@@ -102,8 +133,8 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
           ...prev,
           title: plexBook.title,
           author: plexBook.author,
-          duration_hours: durationHours.toString(),
-          duration_minutes: durationMinutes.toString(),
+          duration_hours: durationHours > 0 ? durationHours.toString() : '',
+          duration_minutes: durationMinutes > 0 ? durationMinutes.toString() : '',
         }));
       } else {
         // Use the default cover art if only one option
@@ -111,8 +142,8 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
           ...prev,
           title: plexBook.title,
           author: plexBook.author,
-          duration_hours: durationHours.toString(),
-          duration_minutes: durationMinutes.toString(),
+          duration_hours: durationHours > 0 ? durationHours.toString() : '',
+          duration_minutes: durationMinutes > 0 ? durationMinutes.toString() : '',
           cover_url: plexBook.coverUrl,
         }));
       }
@@ -123,8 +154,8 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
         ...prev,
         title: plexBook.title,
         author: plexBook.author,
-        duration_hours: durationHours.toString(),
-        duration_minutes: durationMinutes.toString(),
+        duration_hours: durationHours > 0 ? durationHours.toString() : '',
+        duration_minutes: durationMinutes > 0 ? durationMinutes.toString() : '',
         cover_url: plexBook.coverUrl,
       }));
     }
@@ -149,10 +180,18 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
     setShowCoverArtSelector(false);
   };
 
-  const handlePlexSearch = () => {
-    if (!plexAuthConfig) {
+  const handlePlexSearch = async () => {
+    // Ensure auth is refreshed from storage (silently)
+    await plexService.ensureAuth();
+    
+    // Check if we have valid authentication
+    const currentAuth = plexService.getAuthConfig();
+    
+    if (!currentAuth) {
+      // No auth, show login
       setShowPlexOAuth(true);
     } else {
+      // Have auth, go directly to search
       setShowPlexSearch(true);
     }
   };
@@ -215,7 +254,11 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
   };
 
   const handleSave = async () => {
-    if (!validateForm()) return;
+    console.log('handleSave called');
+    if (!validateForm()) {
+      console.log('Validation failed');
+      return;
+    }
 
     const hours = parseInt(formData.duration_hours) || 0;
     const minutes = parseInt(formData.duration_minutes) || 0;
@@ -235,6 +278,7 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
     };
 
     try {
+      console.log('Attempting to save book:', book ? 'update' : 'add', bookData);
       if (book) {
         // Update existing book
         await updateBook(book.id, bookData);
@@ -242,8 +286,10 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
         // Add new book
         await addBook(bookData);
       }
+      console.log('Book saved successfully, calling onSave');
       onSave();
     } catch (error) {
+      console.error('Error saving book:', error);
       Alert.alert('Error', 'Failed to save book. Please try again.');
     }
   };
@@ -263,19 +309,30 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
             <ThemedText type="defaultSemiBold" style={styles.label}>
               Title
             </ThemedText>
-            <TextInput
-              style={styles.input}
-              value={formData.title}
-              onChangeText={(value) => handleInputChange('title', value)}
-            />
-            <TouchableOpacity
-              style={styles.plexButton}
-              onPress={handlePlexSearch}
-            >
-              <ThemedText style={styles.plexButtonText}>
-                Search Plex Library
-              </ThemedText>
-            </TouchableOpacity>
+            <ThemedView style={styles.titleInputContainer}>
+              <TextInput
+                style={styles.titleInput}
+                value={formData.title}
+                onChangeText={(value) => handleInputChange('title', value)}
+              />
+              <TouchableOpacity
+                style={styles.plexSearchButton}
+                onPress={handlePlexSearch}
+              >
+                <SvgXml 
+                  xml={PlexLogoSvg} 
+                  width={26} 
+                  height={26} 
+                  style={styles.plexIcon} 
+                />
+                <IconSymbol 
+                  name="magnifyingglass" 
+                  size={14} 
+                  color="#000000" 
+                  style={styles.searchIcon} 
+                />
+              </TouchableOpacity>
+            </ThemedView>
           </ThemedView>
 
           <ThemedView style={styles.inputGroup}>
@@ -432,7 +489,13 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
             <TouchableOpacity style={styles.cancelButton} onPress={onCancel}>
               <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
+            <TouchableOpacity 
+              style={styles.saveButton} 
+              onPress={() => {
+                console.log('Save button pressed');
+                handleSave();
+              }}
+            >
               <ThemedText style={styles.saveButtonText}>
                 {book ? 'Update' : 'Add'} Book
               </ThemedText>
@@ -468,9 +531,11 @@ export const BookForm: React.FC<BookFormProps> = ({ book, onSave, onCancel }) =>
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#000000',
   },
   scrollView: {
     flex: 1,
+    backgroundColor: '#000000',
   },
   form: {
     paddingHorizontal: 20,
@@ -611,19 +676,35 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  plexButton: {
-    backgroundColor: '#E5A00D',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 8,
+  titleInputContainer: {
     flexDirection: 'row',
-    justifyContent: 'center',
+    alignItems: 'center',
     gap: 8,
   },
-  plexButtonText: {
-    color: '#000000',
+  titleInput: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 8,
+    padding: 12,
     fontSize: 16,
-    fontWeight: '600',
+    color: '#ECEDEE',
+  },
+  plexSearchButton: {
+    backgroundColor: '#E5A00D',
+    borderRadius: 8,
+    padding: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 50,
+    flexDirection: 'row',
+    gap: 4,
+  },
+  plexIcon: {
+    marginRight: 2,
+  },
+  searchIcon: {
+    marginLeft: 2,
   },
 });

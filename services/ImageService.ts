@@ -1,5 +1,5 @@
 import { Book } from '@/types/Book';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 
 class ImageService {
@@ -18,7 +18,7 @@ class ImageService {
     }
   }
 
-  async downloadAndResizeImage(imageUrl: string, bookId: string): Promise<string> {
+  async downloadAndResizeImage(imageUrl: string, bookId: string, forceDownload: boolean = false): Promise<string> {
     try {
       // Create a unique filename for this book
       const fileExtension = this.getFileExtension(imageUrl) || 'jpg';
@@ -26,8 +26,13 @@ class ImageService {
 
       // Check if image already exists locally
       const existingFile = await FileSystem.getInfoAsync(localPath);
-      if (existingFile.exists) {
+      if (existingFile.exists && !forceDownload) {
         return localPath;
+      }
+      
+      // If force download, delete existing file first
+      if (forceDownload && existingFile.exists) {
+        await FileSystem.deleteAsync(localPath);
       }
 
       // Download the image

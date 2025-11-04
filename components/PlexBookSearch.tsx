@@ -13,6 +13,9 @@ import {
     TouchableOpacity,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SvgXml } from 'react-native-svg';
+
+const PlexWordmarkSvg = `<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Plex</title><path d="M3.987 8.409c-.96 0-1.587.28-2.12.933v-.72H0v8.88s.038.018.127.037c.138.03.821.187 1.331-.249.441-.377.542-.814.542-1.318v-1.283c.533.573 1.147.813 2 .813 1.84 0 3.253-1.493 3.253-3.48 0-2.12-1.36-3.613-3.266-3.613Zm16.748 5.595.406.591c.391.614.894.906 1.492.908.621-.012 1.064-.562 1.226-.755 0 0-.307-.27-.686-.72-.517-.614-1.214-1.755-1.24-1.803l-1.198 1.779Zm-3.205-1.955c0-2.08-1.52-3.64-3.52-3.64s-3.467 1.587-3.467 3.573a3.48 3.48 0 0 0 3.507 3.52c1.413 0 2.626-.84 3.253-2.293h-2.04l-.093.093c-.427.4-.72.533-1.227.533-.787 0-1.373-.506-1.453-1.266h4.986c.04-.214.054-.307.054-.52Zm-7.671-.219c0 .769.11 1.701.868 2.722l.056.069c-.306.526-.742.88-1.248.88-.399 0-.814-.211-1.138-.579a2.177 2.177 0 0 1-.538-1.441V6.409H9.86l-.001 5.421Zm9.283 3.46h-2.39l2.247-3.332-2.247-3.335h2.39l2.248 3.335-2.248 3.332Zm1.593-1.286Zm-17.162-.342c-.933 0-1.68-.773-1.68-1.72s.76-1.666 1.68-1.666c.92 0 1.68.733 1.68 1.68 0 .946-.733 1.706-1.68 1.706Zm18.361-1.974L24 8.622h-2.391l-.87 1.293 1.195 1.773Zm-9.404-.466c.16-.706.72-1.133 1.493-1.133.773 0 1.373.467 1.507 1.133h-3Z"/></svg>`;
 
 interface PlexBookSearchProps {
   visible: boolean;
@@ -51,11 +54,11 @@ export const PlexBookSearch: React.FC<PlexBookSearchProps> = ({
     try {
       if (searchMode === 'title') {
         // Search for albums (books) by title
-        const results = await plexService.searchBooks(query, undefined, 'title');
+        const results = await plexService.searchBooks(query.trim(), undefined, 'title');
         setBooks(results);
       } else {
         // Search for artists (authors) only
-        const results = await plexService.searchArtists(query);
+        const results = await plexService.searchArtists(query.trim());
         setArtists(results);
       }
     } catch (error) {
@@ -174,7 +177,7 @@ export const PlexBookSearch: React.FC<PlexBookSearchProps> = ({
         <ThemedView style={styles.artistFilterContainer}>
           <ThemedView style={styles.artistFilterHeader}>
             <TouchableOpacity onPress={handleBackToArtists} style={styles.backButton}>
-              <ThemedText style={styles.backButtonText}>← Back to Artists</ThemedText>
+              <ThemedText style={styles.backButtonText}>← Back to Authors</ThemedText>
             </TouchableOpacity>
             <ThemedText style={styles.artistFilterTitle}>Books by {selectedArtist.title}</ThemedText>
           </ThemedView>
@@ -246,9 +249,15 @@ export const PlexBookSearch: React.FC<PlexBookSearchProps> = ({
     >
       <ThemedView style={[styles.container, { paddingTop: insets.top }]}>
         <ThemedView style={styles.header}>
-          <ThemedText type="title" style={styles.title}>
-            Search Plex Library
-          </ThemedText>
+          <ThemedView style={styles.plexWordmark}>
+            <SvgXml 
+              xml={PlexWordmarkSvg} 
+              width={240} 
+              height={72} 
+              fill="#ECEDEE"
+            />
+          </ThemedView>
+          <ThemedView style={styles.closeButtonSpacer} />
           <TouchableOpacity style={styles.closeButton} onPress={onClose}>
             <ThemedText style={styles.closeButtonText}>✕</ThemedText>
           </TouchableOpacity>
@@ -325,7 +334,7 @@ export const PlexBookSearch: React.FC<PlexBookSearchProps> = ({
 
           {searching && (
             <ThemedView style={styles.loadingContainer}>
-              <ActivityIndicator style={styles.searchIndicator} color="#50b042" />
+              <ActivityIndicator style={styles.searchIndicator} color="#E5A00D" />
               <ThemedText style={styles.loadingText}>Searching...</ThemedText>
             </ThemedView>
           )}
@@ -354,6 +363,15 @@ const styles = StyleSheet.create({
   title: {
     flex: 1,
   },
+  plexWordmark: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 55,
+  },
+  closeButtonSpacer: {
+    width: 40,
+  },
   closeButton: {
     padding: 8,
   },
@@ -379,7 +397,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modeButtonActive: {
-    backgroundColor: '#50b042',
+    backgroundColor: '#E5A00D',
   },
   modeButtonText: {
     color: '#ECEDEE',
@@ -388,7 +406,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   modeButtonTextActive: {
-    color: '#fff',
+    color: '#000000',
     opacity: 1,
   },
   searchInputContainer: {
@@ -422,7 +440,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   searchButton: {
-    backgroundColor: '#50b042',
+    backgroundColor: '#E5A00D',
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: 8,
@@ -430,7 +448,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   searchButtonDisabled: {
-    backgroundColor: 'rgba(80, 176, 66, 0.3)',
+    backgroundColor: 'rgba(229, 160, 13, 0.3)',
   },
   searchButtonText: {
     color: '#fff',
@@ -489,7 +507,7 @@ const styles = StyleSheet.create({
   },
   bookDuration: {
     fontSize: 12,
-    color: '#50b042',
+    color: '#E5A00D',
     fontWeight: '500',
   },
   artistItem: {
@@ -504,14 +522,14 @@ const styles = StyleSheet.create({
   artistImageContainer: {
     width: 60,
     height: 60,
-    borderRadius: 30,
+    borderRadius: 8,
     marginRight: 12,
-    backgroundColor: '#50b042',
+    backgroundColor: '#E5A00D',
     justifyContent: 'center',
     alignItems: 'center',
   },
   artistInitials: {
-    color: '#fff',
+    color: '#000000',
     fontSize: 20,
     fontWeight: '600',
   },
@@ -543,7 +561,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   backButtonText: {
-    color: '#50b042',
+    color: '#E5A00D',
     fontSize: 14,
     fontWeight: '500',
   },

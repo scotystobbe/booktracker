@@ -2,22 +2,34 @@
   "expo": {
     "name": "BookTracker",
     "slug": "booktracker",
-    "version": "1.0.2",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/book-tracker-logo-dark.png",
     "scheme": "booktracker",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "description": "Track your reading progress with BookTracker. Sync with Plex to automatically discover audiobooks and track your reading speed and completion percentage.",
+    "keywords": ["books", "reading", "tracker", "audiobooks", "plex", "library"],
+    "privacy": "public",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.scotystobbe.booktracker",
+      "appStoreUrl": "https://apps.apple.com/app/booktracker/id1234567890",
+      "buildNumber": "2",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSAppTransportSecurity": {
-          "NSAllowsArbitraryLoads": true,
-          "NSAllowsArbitraryLoadsInWebContent": true,
-          "NSAllowsLocalNetworking": true
-        },
+                    "NSAppTransportSecurity": {
+              "NSAllowsArbitraryLoads": true,
+              "NSAllowsArbitraryLoadsInWebContent": true,
+              "NSAllowsLocalNetworking": true,
+              "NSExceptionDomains": {
+                "69.162.238.198": {
+                  "NSExceptionAllowsInsecureHTTPLoads": true,
+                  "NSExceptionMinimumTLSVersion": "1.0",
+                  "NSExceptionRequiresForwardSecrecy": false
+                }
+              }
+            },
         "NSLocalNetworkUsageDescription": "This app needs access to your local network to connect to your Plex Media Server for book discovery and progress syncing."
       }
     },

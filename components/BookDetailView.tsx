@@ -36,12 +36,16 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({ book, onBack, on
   const [showEditConfirmation, setShowEditConfirmation] = useState(false);
   const [showAdditionalStats, setShowAdditionalStats] = useState(false);
   const [syncingProgress, setSyncingProgress] = useState(false);
+  const [syncSuccess, setSyncSuccess] = useState(false);
+  const [syncError, setSyncError] = useState(false);
 
   // Recalculate values when book changes
   useEffect(() => {
     const startDate = new Date(book.start_date);
-    const currentDate = new Date();
-    const daysSinceStartValue = (currentDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+    const endDate = book.percent_complete === 100 && book.finish_date 
+      ? new Date(book.finish_date) 
+      : new Date();
+    const daysSinceStartValue = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
 
     setDaysSinceStart(daysSinceStartValue);
     
@@ -50,13 +54,15 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({ book, onBack, on
     
     const calculatedETA = calculateETA();
     setEta(calculatedETA);
-  }, [book.percent_complete, book.reading_speed, book.duration, book.start_date]);
+  }, [book.percent_complete, book.reading_speed, book.duration, book.start_date, book.finish_date]);
 
   // Also run calculation on mount
   useEffect(() => {
     const startDate = new Date(book.start_date);
-    const currentDate = new Date();
-    const daysSinceStartValue = (currentDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+    const endDate = book.percent_complete === 100 && book.finish_date 
+      ? new Date(book.finish_date) 
+      : new Date();
+    const daysSinceStartValue = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
 
     setDaysSinceStart(daysSinceStartValue);
     
@@ -69,8 +75,10 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({ book, onBack, on
 
   const calculateTrueHoursPerDay = () => {
     const startDate = new Date(book.start_date);
-    const currentDate = new Date();
-    const daysElapsed = (currentDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+    const endDate = book.percent_complete === 100 && book.finish_date 
+      ? new Date(book.finish_date) 
+      : new Date();
+    const daysElapsed = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
     
     if (daysElapsed <= 0) return 0;
     
@@ -311,6 +319,22 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({ book, onBack, on
     return bookHoursCompleted / book.reading_speed;
   };
 
+  const formatReadingSpeed = (speed: number): string => {
+    // If it's a whole number, show no decimal places
+    if (speed % 1 === 0) {
+      return speed.toString();
+    }
+    
+    // If it's a perfect tenth (e.g., 1.8, 1.9), show one decimal place
+    const roundedToOneDecimal = Math.round(speed * 10) / 10;
+    if (Math.abs(speed - roundedToOneDecimal) < 0.001) {
+      return speed.toFixed(1);
+    }
+    
+    // Otherwise, show up to 2 decimal places
+    return speed.toFixed(2);
+  };
+
   const handleSpeedUpdate = async () => {
     const newSpeed = parseFloat(tempSpeed);
     if (isNaN(newSpeed) || newSpeed <= 0) {
@@ -329,8 +353,13 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({ book, onBack, on
 
   const handleProgressUpdate = async () => {
     setSyncingProgress(true);
+    setSyncSuccess(false);
+    setSyncError(false);
     
     try {
+      // Ensure auth is refreshed from storage (silently)
+      await plexService.ensureAuth();
+      
       // Check if Plex is configured
       const authConfig = plexService.getAuthConfig();
       if (!authConfig) {
@@ -343,38 +372,61 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({ book, onBack, on
       console.log('Searching for book in Plex:', book.title, 'by', book.author);
       
       // Search for the book in Plex to get its ID
+      // Search by both title and author to ensure we get the right book
       const searchResults = await plexService.searchBooks(book.title, undefined, 'title');
       console.log('Plex search results:', searchResults.length, 'books found');
       
-      const matchingBook = searchResults.find(plexBook => 
-        plexBook.title.toLowerCase() === book.title.toLowerCase() &&
-        plexBook.author.toLowerCase() === book.author.toLowerCase()
-      );
+      // Find exact match by both title AND author (case-insensitive)
+      // This ensures we get the correct book even if multiple books are in progress
+      const matchingBook = searchResults.find(plexBook => {
+        const titleMatch = plexBook.title.toLowerCase().trim() === book.title.toLowerCase().trim();
+        const authorMatch = plexBook.author.toLowerCase().trim() === book.author.toLowerCase().trim();
+        
+        if (titleMatch && authorMatch) {
+          console.log('Found exact match:', plexBook.title, 'by', plexBook.author);
+          return true;
+        }
+        return false;
+      });
 
       if (!matchingBook) {
         console.log('No matching book found in Plex');
+        console.log('Looking for:', book.title, 'by', book.author);
+        console.log('Search results:', searchResults.map(b => ({ title: b.title, author: b.author })));
         setSyncingProgress(false);
-        Alert.alert('Book Not Found', 'This book was not found in your Plex library. You can still update progress manually.');
-        setShowProgressModal(true);
+        setSyncError(true);
+        // Clear error state after 1 second
+        setTimeout(() => setSyncError(false), 1000);
         return;
       }
 
-      console.log('Found matching book in Plex:', matchingBook.id);
+      console.log('Found matching book in Plex:', matchingBook.id, matchingBook.title, 'by', matchingBook.author);
 
-      // Get progress from Plex
+      // Get progress from Plex (now includes completion detection)
       const progress = await plexService.getBookProgress(matchingBook.id);
       console.log('Synced progress from Plex:', progress + '%');
+
+      // If progress is 100%, show completion modal to get finish date
+      if (progress === 100) {
+        setSyncingProgress(false);
+        setShowCompletionModal(true);
+        setCompletionDate(new Date()); // Default to current time
+        return;
+      }
 
       // Update the book with synced progress
       await updateBook(book.id, { percent_complete: progress });
       
       setSyncingProgress(false);
-      Alert.alert('Progress Synced', `Progress updated to ${progress}% from Plex`);
+      setSyncSuccess(true);
+      // Clear success state after 1 second
+      setTimeout(() => setSyncSuccess(false), 1000);
     } catch (error) {
       console.error('Failed to sync progress from Plex:', error);
       setSyncingProgress(false);
-      Alert.alert('Sync Failed', 'Failed to sync progress from Plex. You can still update progress manually.');
-      setShowProgressModal(true);
+      setSyncError(true);
+      // Clear error state after 1 second
+      setTimeout(() => setSyncError(false), 1000);
     }
   };
 
@@ -453,6 +505,14 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({ book, onBack, on
               <View style={[styles.progressText, { position: 'absolute', top: 5, right: 5, width: 35, height: 35, justifyContent: 'center', alignItems: 'center' }]}>
                 <ActivityIndicator size="small" color="#ffffff" />
               </View>
+            ) : syncSuccess ? (
+              <View style={[styles.progressText, { position: 'absolute', top: 5, right: 5, width: 35, height: 35, justifyContent: 'center', alignItems: 'center' }]}>
+                <IconSymbol name="checkmark.circle.fill" size={24} color="#ffffff" />
+              </View>
+            ) : syncError ? (
+              <View style={[styles.progressText, { position: 'absolute', top: 5, right: 5, width: 35, height: 35, justifyContent: 'center', alignItems: 'center' }]}>
+                <IconSymbol name="exclamationmark.circle.fill" size={24} color="#FF3B30" />
+              </View>
             ) : (
               <ThemedText style={[styles.progressText, { position: 'absolute', top: 5, right: 5, width: 35, height: 35, textAlign: 'center', lineHeight: 35, paddingTop: 3 }]}>
                 {`${book.percent_complete}%`}
@@ -528,7 +588,7 @@ export const BookDetailView: React.FC<BookDetailViewProps> = ({ book, onBack, on
             activeOpacity={1}
           >
             <ThemedText style={styles.metadataLabel}>Speed</ThemedText>
-            <ThemedText style={styles.metadataValue}>{book.reading_speed}x</ThemedText>
+            <ThemedText style={styles.metadataValue}>{formatReadingSpeed(book.reading_speed)}x</ThemedText>
           </TouchableOpacity>
           
           <TouchableOpacity 

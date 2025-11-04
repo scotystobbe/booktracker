@@ -116,11 +116,6 @@ export default function HomeScreen() {
               <ThemedText type="title" style={styles.title}>
                 Current Book
               </ThemedText>
-              <ThemedView style={styles.headerButtons}>
-                <TouchableOpacity style={styles.addButton} onPress={handleAddBook}>
-                  <ThemedText style={styles.addButtonText}>+ Add Book</ThemedText>
-                </TouchableOpacity>
-              </ThemedView>
             </ThemedView>
             {loading ? (
               <ThemedView style={styles.loadingContainer}>
@@ -161,21 +156,6 @@ const styles = StyleSheet.create({
   },
   title: {
     flex: 1,
-  },
-  headerButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  addButton: {
-    backgroundColor: '#50b042',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  addButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
   },
   loadingContainer: {
     flex: 1,
